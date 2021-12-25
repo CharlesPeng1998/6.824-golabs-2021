@@ -1,12 +1,14 @@
 package mr
 
 import (
+	"encoding/json"
 	"fmt"
 	"hash/fnv"
 	"io/ioutil"
 	"log"
 	"net/rpc"
 	"os"
+	"sort"
 	"time"
 )
 
@@ -17,6 +19,12 @@ type KeyValue struct {
 	Key   string
 	Value string
 }
+
+type KVList []KeyValue
+
+func (a KVList) Len() int           { return len(a) }
+func (a KVList) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a KVList) Less(i, j int) bool { return a[i].Key < a[j].Key }
 
 //
 // use ihash(key) % NReduce to choose the reduce
@@ -33,33 +41,42 @@ func ihash(key string) int {
 //
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
-	args := MapReduceArgs{Message: "task_request"}
-	reply := MapReduceReply{}
+	task_request_args := TaskRequestArgs{}
+	task_request_reply := TaskRequestReply{}
 
 	for {
-		connected := TaskRequest(&args, &reply)
+		connected := TaskRequest(&task_request_args, &task_request_reply)
 
-		// Connection fails or receive work exit signal
-		if !connected || reply.Type == 3 {
+		if !connected {
+			log.Fatalf("Fail to send task request signal!")
+		}
+
+		if task_request_reply.Type == 3 {
+			log.Printf("Worker is told to exit!")
 			break
 		}
 
 		// Worker stand by
-		if reply.Type == 2 {
+		if task_request_reply.Type == 2 {
+			log.Printf("No task assigned! Standing by...")
 			time.Sleep(time.Second)
 		}
 
-		// TODO: Map tasks
-		if reply.Type == 0 {
-			num_reduce := reply.Num_reduce
-			filename := reply.Message
+		// Map tasks
+		if task_request_reply.Type == 0 {
+			id_map := task_request_reply.Id_map_task
+			num_reduce := task_request_reply.Num_reduce
+			filename := task_request_reply.Message
+
+			log.Printf("Launching map task %v for input file %v", id_map, filename)
+
 			file, err := os.Open(filename)
 			if err != nil {
-				log.Fatalf("Cannot open %v", filename)
+				log.Fatalf("Map task %v: Cannot open %v", id_map, filename)
 			}
 			content, err := ioutil.ReadAll(file)
 			if err != nil {
-				log.Fatalf("Cannot read %v", filename)
+				log.Fatalf("Map task %v: Cannot read %v", id_map, filename)
 			}
 			file.Close()
 			kv_list := mapf(filename, string(content))
@@ -71,42 +88,40 @@ func Worker(mapf func(string, string) []KeyValue,
 				kv_partition_list[id_reduce] = append(kv_partition_list[id_reduce], kv)
 			}
 
+			// Write intermediate files
 			for i := 0; i < num_reduce; i++ {
-				//
+				sort.Sort(KVList(kv_partition_list[i]))
+				WriteIntermediateFile(kv_partition_list[i], id_map, i)
+			}
+
+			log.Printf("Map task %v: Output has been written to files! Informing master...", id_map)
+
+			// Inform master task has been finished
+			task_finish_args := TaskFinishArgs{Id_map_task: id_map, Type: 0}
+			task_finish_reply := TaskFinishReply{Ack: false}
+			ret := TaskFinish(&task_finish_args, &task_finish_reply)
+			if !ret {
+				log.Fatalf("Map task %v: Fail to send task finish signal to master!", id_map)
+			}
+
+			if task_finish_reply.Ack {
+				log.Printf("Map task %v: Task has been acknowledged by master!", id_map)
+			} else {
+				log.Printf("Map task %v: Task is not acknowledged by master!", id_map)
 			}
 		}
 
 		// TODO: Reduce tasks
 	}
-
 	return
 }
 
-func TaskRequest(args *MapReduceArgs, reply *MapReduceReply) bool {
-	return call("Coordinator.TaskDistribution", &args, &reply)
+func TaskRequest(args *TaskRequestArgs, reply *TaskRequestReply) bool {
+	return call("Coordinator.TaskRequestHandler", &args, &reply)
 }
 
-//
-// example function to show how to make an RPC call to the coordinator.
-//
-// the RPC argument and reply types are defined in rpc.go.
-//
-func CallExample() {
-
-	// declare an argument structure.
-	args := ExampleArgs{}
-
-	// fill in the argument(s).
-	args.X = 99
-
-	// declare a reply structure.
-	reply := ExampleReply{}
-
-	// send the RPC request, wait for the reply.
-	call("Coordinator.Example", &args, &reply)
-
-	// reply.Y should be 100.
-	fmt.Printf("reply.Y %v\n", reply.Y)
+func TaskFinish(args *TaskFinishArgs, reply *TaskFinishReply) bool {
+	return call("Coordinator.TaskFinishHandler", &args, &reply)
 }
 
 //
@@ -125,4 +140,23 @@ func call(rpcname string, args interface{}, reply interface{}) bool {
 	err = c.Call(rpcname, args, reply)
 
 	return true
+}
+
+func WriteIntermediateFile(kv_list []KeyValue, id_map int, id_reduce int) {
+	intermediate_filename := fmt.Sprintf("mr-%v-%v", id_map, id_reduce)
+	file, err := ioutil.TempFile("./", intermediate_filename)
+	if err != nil {
+		log.Fatalf("Fail to create intermediate file: %v!", intermediate_filename)
+	}
+	defer file.Close()
+
+	encoder := json.NewEncoder(file)
+	err = encoder.Encode(kv_list)
+
+	if err != nil {
+		log.Printf("Fail to encode json in file: %v", intermediate_filename)
+		return
+	}
+
+	os.Rename(file.Name(), intermediate_filename)
 }
