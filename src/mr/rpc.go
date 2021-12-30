@@ -18,6 +18,7 @@ type TaskRequestArgs struct {
 type TaskRequestReply struct {
 	Id_map_task    int
 	Id_reduce_task int
+	Num_map        int
 	Num_reduce     int
 
 	// 0 for map, 1 for reduce, 2 for stand by, 3 for work exit

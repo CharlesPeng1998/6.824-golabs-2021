@@ -57,7 +57,7 @@ func Worker(mapf func(string, string) []KeyValue,
 		} else if task_request_reply.Type == 0 { // Map tasks
 			MapTaskExecution(&task_request_reply, mapf)
 		} else if task_request_reply.Type == 1 { // Reduce tasks
-			// TODO
+			ReduceTaskExecution(&task_request_reply, reducef)
 		}
 
 		time.Sleep(time.Second)
@@ -118,7 +118,6 @@ func WriteIntermediateFile(kv_list []KeyValue, id_map int, id_reduce int) bool {
 // 3. Partitioning
 // 4. Write intermediate files
 func MapTaskExecution(task_request_reply *TaskRequestReply, mapf func(string, string) []KeyValue) {
-	// TODO
 	id_map := task_request_reply.Id_map_task
 	num_reduce := task_request_reply.Num_reduce
 	filename := task_request_reply.Message
@@ -177,5 +176,69 @@ func MapTaskExecution(task_request_reply *TaskRequestReply, mapf func(string, st
 		log.Printf("Map task %v: Task has been acknowledged by master!", id_map)
 	} else {
 		log.Printf("Map task %v: Task is not acknowledged by master!", id_map)
+	}
+}
+
+func ReduceTaskExecution(task_request_reply *TaskRequestReply, reducef func(string, []string) string) {
+	id_reduce := task_request_reply.Id_reduce_task
+	num_map := task_request_reply.Num_map
+
+	log.Printf("Launching reduce task %v...", id_reduce)
+
+	output_filename := fmt.Sprintf("mr-out-%v", id_reduce)
+	output_file, err := ioutil.TempFile("./", output_filename)
+	if err != nil {
+		log.Printf("Reduce task %v: Fail to create output file: %v", id_reduce, output_filename)
+	}
+
+	for id_map := 0; id_map < num_map; id_map++ {
+		intermediate_filename := fmt.Sprintf("mr-%v-%v", id_map, id_reduce)
+		intermediate_file, err := os.Open(intermediate_filename)
+
+		if err != nil {
+			log.Printf("Reduce task %v: Fail to open intermediate file %v! Task is aborted!", id_reduce, intermediate_filename)
+			return
+		}
+
+		kv_list := []KeyValue{}
+		decoder := json.NewDecoder(intermediate_file)
+		err = decoder.Decode(&kv_list)
+
+		if err != nil {
+			log.Printf("Reduce task %v: Fail to decode json in file: %v", id_reduce, intermediate_filename)
+			return
+		}
+
+		i := 0
+		for i < len(kv_list) {
+			j := i + 1
+			for j < len(kv_list) && kv_list[j].Key == kv_list[i].Key {
+				j++
+			}
+			values := []string{}
+			for k := i; k < j; k++ {
+				values = append(values, kv_list[k].Value)
+			}
+			output := reducef(kv_list[i].Key, values)
+			fmt.Fprintf(output_file, "%v %v\n", kv_list[i].Key, output)
+
+			i = j
+		}
+	}
+
+	os.Rename(output_file.Name(), output_filename)
+	log.Printf("Reduce task %v: Output has been written to file: %v! Informing master...", id_reduce, output_filename)
+
+	task_finish_args := TaskFinishArgs{Id_reduce_task: id_reduce, Type: 1}
+	task_finish_reply := TaskFinishReply{Ack: false}
+	ret := SendTaskFinishSignal(&task_finish_args, &task_finish_reply)
+	if !ret {
+		log.Printf("Reduce task %v: Fail to send task finish signal to master! Task is aborted!", id_reduce)
+	}
+
+	if task_finish_reply.Ack {
+		log.Printf("Reduce task %v: Task has been acknowledged by master!", id_reduce)
+	} else {
+		log.Printf("Reduce task %v: Task is not acknowledged by master!", id_reduce)
 	}
 }
