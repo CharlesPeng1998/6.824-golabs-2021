@@ -45,10 +45,12 @@ func Worker(mapf func(string, string) []KeyValue,
 	task_request_reply := TaskRequestReply{}
 
 	for {
-		connected := TaskRequest(&task_request_args, &task_request_reply)
+		connected := SendTaskRequestSignal(&task_request_args, &task_request_reply)
 
 		if !connected {
-			log.Fatalf("Fail to send task request signal!")
+			log.Printf("Fail to send task request signal!")
+			time.Sleep(time.Second)
+			continue
 		}
 
 		if task_request_reply.Type == 3 {
@@ -60,6 +62,7 @@ func Worker(mapf func(string, string) []KeyValue,
 		if task_request_reply.Type == 2 {
 			log.Printf("No task assigned! Standing by...")
 			time.Sleep(time.Second)
+			continue
 		}
 
 		// Map tasks
@@ -70,15 +73,23 @@ func Worker(mapf func(string, string) []KeyValue,
 
 			log.Printf("Launching map task %v for input file %v", id_map, filename)
 
+			// Reading input file
 			file, err := os.Open(filename)
 			if err != nil {
-				log.Fatalf("Map task %v: Cannot open %v", id_map, filename)
+				log.Printf("Map task %v: Cannot open %v! Task is aborted!", id_map, filename)
+				time.Sleep(time.Second)
+				continue
 			}
 			content, err := ioutil.ReadAll(file)
 			if err != nil {
-				log.Fatalf("Map task %v: Cannot read %v", id_map, filename)
+				log.Printf("Map task %v: Cannot read %v! Task is aborted", id_map, filename)
+				file.Close()
+				time.Sleep(time.Second)
+				continue
 			}
 			file.Close()
+
+			// Running user-defined map function
 			kv_list := mapf(filename, string(content))
 
 			// Partitioning
@@ -89,19 +100,29 @@ func Worker(mapf func(string, string) []KeyValue,
 			}
 
 			// Write intermediate files
+			written := true
 			for i := 0; i < num_reduce; i++ {
 				sort.Sort(KVList(kv_partition_list[i]))
-				WriteIntermediateFile(kv_partition_list[i], id_map, i)
+				written = WriteIntermediateFile(kv_partition_list[i], id_map, i)
+				if !written {
+					break
+				}
 			}
-
+			if !written {
+				log.Printf("Map task %v: Fail to write intermediate files! Task is aborted!", id_map)
+				time.Sleep(time.Second)
+				continue
+			}
 			log.Printf("Map task %v: Output has been written to files! Informing master...", id_map)
 
 			// Inform master task has been finished
 			task_finish_args := TaskFinishArgs{Id_map_task: id_map, Type: 0}
 			task_finish_reply := TaskFinishReply{Ack: false}
-			ret := TaskFinish(&task_finish_args, &task_finish_reply)
+			ret := SendTaskFinishSignal(&task_finish_args, &task_finish_reply)
 			if !ret {
-				log.Fatalf("Map task %v: Fail to send task finish signal to master!", id_map)
+				log.Printf("Map task %v: Fail to send task finish signal to master! Task is aborted!", id_map)
+				time.Sleep(time.Second)
+				continue
 			}
 
 			if task_finish_reply.Ack {
@@ -116,11 +137,11 @@ func Worker(mapf func(string, string) []KeyValue,
 	return
 }
 
-func TaskRequest(args *TaskRequestArgs, reply *TaskRequestReply) bool {
+func SendTaskRequestSignal(args *TaskRequestArgs, reply *TaskRequestReply) bool {
 	return call("Coordinator.TaskRequestHandler", &args, &reply)
 }
 
-func TaskFinish(args *TaskFinishArgs, reply *TaskFinishReply) bool {
+func SendTaskFinishSignal(args *TaskFinishArgs, reply *TaskFinishReply) bool {
 	return call("Coordinator.TaskFinishHandler", &args, &reply)
 }
 
@@ -142,11 +163,12 @@ func call(rpcname string, args interface{}, reply interface{}) bool {
 	return true
 }
 
-func WriteIntermediateFile(kv_list []KeyValue, id_map int, id_reduce int) {
+func WriteIntermediateFile(kv_list []KeyValue, id_map int, id_reduce int) bool {
 	intermediate_filename := fmt.Sprintf("mr-%v-%v", id_map, id_reduce)
 	file, err := ioutil.TempFile("./", intermediate_filename)
 	if err != nil {
-		log.Fatalf("Fail to create intermediate file: %v!", intermediate_filename)
+		log.Printf("Map task %v: Fail to create intermediate file: %v!", id_map, intermediate_filename)
+		return false
 	}
 	defer file.Close()
 
@@ -154,9 +176,10 @@ func WriteIntermediateFile(kv_list []KeyValue, id_map int, id_reduce int) {
 	err = encoder.Encode(kv_list)
 
 	if err != nil {
-		log.Printf("Fail to encode json in file: %v", intermediate_filename)
-		return
+		log.Printf("Map task %v: Fail to encode json in file: %v", id_map, intermediate_filename)
+		return false
 	}
 
 	os.Rename(file.Name(), intermediate_filename)
+	return true
 }
