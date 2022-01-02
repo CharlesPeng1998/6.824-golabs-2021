@@ -39,8 +39,8 @@ func (c *Coordinator) TaskRequestHandler(args *TaskRequestArgs, reply *TaskReque
 			}
 		}
 		if id_map == -1 {
-			log.Printf("No map task is available now! Informing worker to stand by...")
 			reply.Type = 2
+			log.Printf("No map task is available now! Informing worker to stand by...")
 		} else {
 			reply.Type = 0
 			reply.Id_map_task = id_map
@@ -61,7 +61,7 @@ func (c *Coordinator) TaskRequestHandler(args *TaskRequestArgs, reply *TaskReque
 			}
 		}
 		if id_reduce == -1 {
-			log.Printf("No map task is available now! Informing worker to stand by...")
+			log.Printf("No reduce task is available now! Informing worker to stand by...")
 			reply.Type = 2
 		} else {
 			reply.Type = 1

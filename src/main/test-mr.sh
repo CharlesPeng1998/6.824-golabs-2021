@@ -130,6 +130,8 @@ fi
 wait
 
 
+
+
 #########################################################
 echo '***' Starting reduce parallelism test.
 
@@ -152,6 +154,8 @@ else
 fi
 
 wait
+
+
 
 #########################################################
 echo '***' Starting job count test.
@@ -178,6 +182,8 @@ fi
 
 wait
 
+
+
 #########################################################
 # test whether any worker or coordinator exits before the
 # task has completed (i.e., all output files have been finalized)
@@ -199,7 +205,7 @@ timeout -k 2s 180s ../mrworker ../../mrapps/early_exit.so &
 # `jobs` ensures that any completed old processes from other tests
 # are not waited upon
 jobs &> /dev/null
-wait -n
+wait
 
 # a process has exited. this means that the output should be finalized
 # otherwise, either a worker or the coordinator exited early
@@ -218,6 +224,9 @@ else
   echo '---' early exit test: FAIL
   failed_any=1
 fi
+
+
+
 rm -f mr-*
 
 #########################################################

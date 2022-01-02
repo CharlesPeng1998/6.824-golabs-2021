@@ -41,11 +41,12 @@ func ihash(key string) int {
 //
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
-	task_request_args := TaskRequestArgs{}
-	task_request_reply := TaskRequestReply{}
 
 	for {
+		task_request_args := TaskRequestArgs{}
+		task_request_reply := TaskRequestReply{}
 		connected := SendTaskRequestSignal(&task_request_args, &task_request_reply)
+		log.Printf("Reply type = %v", task_request_reply.Type)
 
 		if !connected {
 			log.Printf("Fail to send task request signal!")
@@ -56,8 +57,12 @@ func Worker(mapf func(string, string) []KeyValue,
 			log.Printf("No task assigned! Standing by...")
 		} else if task_request_reply.Type == 0 { // Map tasks
 			MapTaskExecution(&task_request_reply, mapf)
+			log.Printf("Running map task!!!!!")
 		} else if task_request_reply.Type == 1 { // Reduce tasks
 			ReduceTaskExecution(&task_request_reply, reducef)
+			log.Printf("Running reduce task!!!!!")
+		} else if task_request_reply.Type == 999999999 {
+			log.Printf("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF")
 		}
 
 		time.Sleep(time.Second)
@@ -87,6 +92,11 @@ func call(rpcname string, args interface{}, reply interface{}) bool {
 
 	defer c.Close()
 	err = c.Call(rpcname, args, reply)
+
+	if err != nil {
+		log.Printf("Fail to send RPC request!")
+		return false
+	}
 
 	return true
 }
@@ -191,6 +201,8 @@ func ReduceTaskExecution(task_request_reply *TaskRequestReply, reducef func(stri
 		log.Printf("Reduce task %v: Fail to create output file: %v", id_reduce, output_filename)
 	}
 
+	kv_list := []KeyValue{}
+
 	for id_map := 0; id_map < num_map; id_map++ {
 		intermediate_filename := fmt.Sprintf("mr-%v-%v", id_map, id_reduce)
 		intermediate_file, err := os.Open(intermediate_filename)
@@ -200,30 +212,33 @@ func ReduceTaskExecution(task_request_reply *TaskRequestReply, reducef func(stri
 			return
 		}
 
-		kv_list := []KeyValue{}
+		kv_partition_list := []KeyValue{}
 		decoder := json.NewDecoder(intermediate_file)
-		err = decoder.Decode(&kv_list)
+		err = decoder.Decode(&kv_partition_list)
 
 		if err != nil {
 			log.Printf("Reduce task %v: Fail to decode json in file: %v", id_reduce, intermediate_filename)
 			return
 		}
 
-		i := 0
-		for i < len(kv_list) {
-			j := i + 1
-			for j < len(kv_list) && kv_list[j].Key == kv_list[i].Key {
-				j++
-			}
-			values := []string{}
-			for k := i; k < j; k++ {
-				values = append(values, kv_list[k].Value)
-			}
-			output := reducef(kv_list[i].Key, values)
-			fmt.Fprintf(output_file, "%v %v\n", kv_list[i].Key, output)
+		kv_list = append(kv_list, kv_partition_list...)
+	}
 
-			i = j
+	sort.Sort(KVList(kv_list))
+	i := 0
+	for i < len(kv_list) {
+		j := i + 1
+		for j < len(kv_list) && kv_list[j].Key == kv_list[i].Key {
+			j++
 		}
+		values := []string{}
+		for k := i; k < j; k++ {
+			values = append(values, kv_list[k].Value)
+		}
+		output := reducef(kv_list[i].Key, values)
+		fmt.Fprintf(output_file, "%v %v\n", kv_list[i].Key, output)
+
+		i = j
 	}
 
 	os.Rename(output_file.Name(), output_filename)
