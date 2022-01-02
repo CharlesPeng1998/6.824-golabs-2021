@@ -41,12 +41,10 @@ func ihash(key string) int {
 //
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
-
 	for {
 		task_request_args := TaskRequestArgs{}
 		task_request_reply := TaskRequestReply{}
 		connected := SendTaskRequestSignal(&task_request_args, &task_request_reply)
-		log.Printf("Reply type = %v", task_request_reply.Type)
 
 		if !connected {
 			log.Printf("Fail to send task request signal!")
@@ -57,12 +55,8 @@ func Worker(mapf func(string, string) []KeyValue,
 			log.Printf("No task assigned! Standing by...")
 		} else if task_request_reply.Type == 0 { // Map tasks
 			MapTaskExecution(&task_request_reply, mapf)
-			log.Printf("Running map task!!!!!")
 		} else if task_request_reply.Type == 1 { // Reduce tasks
 			ReduceTaskExecution(&task_request_reply, reducef)
-			log.Printf("Running reduce task!!!!!")
-		} else if task_request_reply.Type == 999999999 {
-			log.Printf("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF")
 		}
 
 		time.Sleep(time.Second)
