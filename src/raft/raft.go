@@ -19,6 +19,7 @@ package raft
 
 import (
 	//	"bytes"
+
 	"log"
 	"math/rand"
 	"sync"
@@ -28,6 +29,14 @@ import (
 	//	"6.824/labgob"
 	"6.824/labrpc"
 )
+
+// func init() {
+// 	log_file, err := os.OpenFile("raft.log", os.O_WRONLY|os.O_CREATE, 0666)
+// 	if err != nil {
+// 		fmt.Println("Fail to open log file!", err)
+// 	}
+// 	log.SetOutput(log_file)
+// }
 
 //
 // as each Raft peer becomes aware that successive log entries are
@@ -52,8 +61,8 @@ type ApplyMsg struct {
 	SnapshotIndex int
 }
 
-const election_timeout_lb int = 500
-const election_timeout_up int = 800
+const election_timeout_lb int = 300
+const election_timeout_up int = 500
 
 //
 // A Go object implementing a single Raft peer.
@@ -70,6 +79,7 @@ type Raft struct {
 	election_timeout int
 	recent_heartbeat bool
 	vote_count       int
+	voted_for        int
 	log              []LogEntry
 }
 
@@ -80,7 +90,6 @@ type LogEntry struct {
 // return currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
-
 	var term int
 	var isleader bool
 
@@ -182,12 +191,19 @@ type AppendEntriesReply struct {
 //
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.mu.Lock()
-	if rf.state != 0 {
-		return
+	current_term := rf.current_term
+	rf.recent_heartbeat = true
+	rf.mu.Unlock()
+
+	if args.Current_term > current_term {
+		rf.updateTerm(args.Current_term)
 	}
-	if args.Current_term >= rf.current_term {
-		rf.current_term = args.Current_term
+
+	rf.mu.Lock()
+	if rf.current_term == args.Current_term && rf.state == 0 && rf.voted_for == -1 {
 		reply.Vote_granted = true
+		rf.voted_for = args.CandidateID
+		log.Printf("Follower %v votes for Candidate %v... (Current term: %v)", rf.me, args.CandidateID, rf.current_term)
 	} else {
 		reply.Vote_granted = false
 	}
@@ -199,21 +215,28 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 // AppendEntries RPC handler
 //
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+	rf.mu.Lock()
+	current_term := rf.current_term
+	current_state := rf.state
+	rf.recent_heartbeat = true
+	rf.mu.Unlock()
+
 	if len(args.Entries) == 0 { // Heartbeat
-		rf.mu.Lock()
-		if args.Current_term > rf.current_term { // See larger term
-			rf.current_term = args.Current_term
-			rf.state = 0
-		}
-		if rf.state == 1 { // Candidate reverts to Follower
-			rf.state = 0
+
+		if args.Current_term > current_term { // See larger term
+			rf.updateTerm(args.Current_term)
+			reply.Current_term = args.Current_term
+		} else {
+			reply.Current_term = current_term
 		}
 
-		reply.Current_term = rf.current_term
-		rf.mu.Unlock()
+		if current_state == 1 { // Candidate reverts to Follower
+			rf.mu.Lock()
+			rf.state = 0
+			rf.mu.Unlock()
+		}
 	}
-
-	// TODO...
+	// TODO: Implement this in later part of Lab 2
 }
 
 //
@@ -221,30 +244,29 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 //
 func (rf *Raft) sendRequestVote(server int) {
 	rf.mu.Lock()
-	candidate_term := rf.current_term
+	current_term := rf.current_term
 	candidate_id := rf.me
 	rf.mu.Unlock()
 
-	log.Printf("Candidate %v is sending vote request to server %v...", candidate_id, server)
+	log.Printf("Candidate %v is sending vote request to server %v... (Current term: %v)", candidate_id, server, current_term)
 
-	args := RequestVoteArgs{Current_term: candidate_term, CandidateID: candidate_id}
+	args := RequestVoteArgs{Current_term: current_term, CandidateID: candidate_id}
 	reply := RequestVoteReply{}
-	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
+	ok := rf.peers[server].Call("Raft.RequestVote", &args, &reply)
 
 	if ok {
 		server_term := reply.Current_term
 		vote_granted := reply.Vote_granted
-		rf.mu.Lock()
-		if server_term > rf.current_term { // Candidate out of date
-			log.Printf("Candidate %v's term %v is out of date (newer term %v), reverting to follower...", candidate_id, rf.current_term, server_term)
-			rf.state = 0
-			rf.current_term = server_term
+		if server_term > current_term { // Candidate out of date
+			log.Printf("Candidate %v's term %v is out of date (newer term %v), reverting to follower...", candidate_id, current_term, server_term)
+			rf.updateTerm(server_term)
 		} else if vote_granted {
+			rf.mu.Lock()
 			rf.vote_count += 1
+			rf.mu.Unlock()
 		}
-		rf.mu.Unlock()
 	} else {
-		log.Printf("Candidate %v fails to send vote request to server %v!", candidate_id, server)
+		log.Printf("Candidate %v fails to send vote request to server %v! (Current term: %v)", candidate_id, server, current_term)
 	}
 }
 
@@ -257,23 +279,34 @@ func (rf *Raft) sendHeartBeat(server int) {
 	current_term := rf.current_term
 	rf.mu.Unlock()
 
-	log.Printf("Leader %v is sending heartbeat to server %v...", id, server)
+	log.Printf("Leader %v is sending heartbeat to server %v... (Current term: %v)", id, server, current_term)
 	args := AppendEntriesArgs{Current_term: current_term, Entries: []LogEntry{}}
 	reply := AppendEntriesReply{}
+
 	ok := rf.peers[server].Call("Raft.AppendEntries", &args, &reply)
 
 	if ok {
 		server_term := reply.Current_term
-		rf.mu.Lock()
-		if server_term > rf.current_term {
-			log.Printf("Leader %v's term %v is out of date (newer term %v), reverting to follower...", id, rf.current_term, server_term)
-			rf.current_term = server_term
-			rf.state = 0
+		if server_term > current_term {
+			log.Printf("Leader %v's term %v is out of date (newer term %v), reverting to follower...", id, current_term, server_term)
+			rf.updateTerm(server_term)
 		}
-		rf.mu.Unlock()
 	} else {
-		log.Printf("Leader %v fails to contact server %v!", id, server)
+		log.Printf("Leader %v fails to contact server %v! (Current term: %v)", id, server, current_term)
 	}
+}
+
+//
+// Update current term when seeing larger term
+// Leader or candidate will revert to follower
+// voted_for will be set to -1
+//
+func (rf *Raft) updateTerm(new_term int) {
+	rf.mu.Lock()
+	rf.current_term = new_term
+	rf.state = 0
+	rf.voted_for = -1
+	rf.mu.Unlock()
 }
 
 //
@@ -353,7 +386,7 @@ func (rf *Raft) ticker() {
 				rand.Seed(time.Now().UnixNano())
 				rf.election_timeout = rand.Intn(election_timeout_up-election_timeout_lb) + election_timeout_lb
 			} else {
-				log.Printf("Follower %v fails to receive recent heartbeat, converting to Candidate...", rf.me)
+				log.Printf("Follower %v fails to receive recent heartbeat, converting to Candidate... (Current term: %v)", rf.me, rf.current_term)
 				// Convert to Candidate
 				rf.state = 1
 			}
@@ -361,7 +394,6 @@ func (rf *Raft) ticker() {
 		} else if server_state == 1 { // Candidate
 			for {
 				rf.mu.Lock()
-				log.Printf("Candidate %v is starting election...", rf.me)
 				// Increment term
 				rf.current_term += 1
 				// Vote for self
@@ -384,14 +416,16 @@ func (rf *Raft) ticker() {
 
 				rf.mu.Lock()
 				if rf.state != 1 {
+					rf.mu.Unlock()
 					break
 				}
 				if rf.vote_count > num_server/2 {
-					log.Printf("Candidate %v obtained majority vote, now becomes leader...", rf.me)
+					log.Printf("Candidate %v obtained majority vote, now becomes leader... (Current term: %v)", rf.me, rf.current_term)
 					rf.state = 2
+					rf.mu.Unlock()
 					break
 				} else {
-					log.Printf("Candidate %v sees split vote, starting new election...", rf.me)
+					log.Printf("Candidate %v sees split vote, starting new election... (Current term: %v)", rf.me, rf.current_term)
 				}
 				rf.mu.Unlock()
 			}
