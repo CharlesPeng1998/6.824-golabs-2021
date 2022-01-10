@@ -360,76 +360,100 @@ func (rf *Raft) ticker() {
 	for rf.killed() == false {
 		rf.mu.Lock()
 		server_state := rf.state
-		num_server := len(rf.peers)
-		id := rf.me
 		rf.mu.Unlock()
 
 		if server_state == 2 { // Leader
-			for i := 0; i < num_server; i++ {
-				if i != id {
-					go rf.sendHeartBeat(i)
-				}
-			}
-			time.Sleep(100 * time.Millisecond)
+			rf.leaderRoutine()
 		} else if server_state == 0 { // Follower
-			rf.mu.Lock()
-			rf.recent_heartbeat = false
-			election_timeout := rf.election_timeout
-			rf.mu.Unlock()
-
-			// Sleep for an election timeout
-			time.Sleep(time.Duration(election_timeout) * time.Millisecond)
-
-			rf.mu.Lock()
-			if rf.recent_heartbeat {
-				// Re-randomize election timeout
-				rand.Seed(time.Now().UnixNano())
-				rf.election_timeout = rand.Intn(election_timeout_up-election_timeout_lb) + election_timeout_lb
-			} else {
-				log.Printf("Follower %v fails to receive recent heartbeat, converting to Candidate... (Current term: %v)", rf.me, rf.current_term)
-				// Convert to Candidate
-				rf.state = 1
-			}
-			rf.mu.Unlock()
+			rf.followerRoutine()
 		} else if server_state == 1 { // Candidate
-			for {
-				rf.mu.Lock()
-				// Increment term
-				rf.current_term += 1
-				// Vote for self
-				rf.vote_count = 1
-				// Reset election timeout
-				rand.Seed(time.Now().UnixNano())
-				rf.election_timeout = rand.Intn(election_timeout_up-election_timeout_lb) + election_timeout_lb
-				election_timeout := rf.election_timeout
-				rf.mu.Unlock()
+			rf.candidateRoutine()
+		}
+	}
+}
 
-				// Send vote request
-				for i := 0; i < len(rf.peers); i++ {
-					if i != id {
-						go rf.sendRequestVote(i)
-					}
-				}
+/*
+ @brief: Leader's routine: Sending out hearbeat
+*/
+func (rf *Raft) leaderRoutine() {
+	rf.mu.Lock()
+	me := rf.me
+	num_server := len(rf.peers)
+	rf.mu.Unlock()
+	for i := 0; i < num_server; i++ {
+		if i != me {
+			go rf.sendHeartBeat(i)
+		}
+	}
+	time.Sleep(100 * time.Millisecond)
+}
 
-				// Sleep for an election timeout
-				time.Sleep(time.Duration(election_timeout) * time.Millisecond)
+/*
+ @brief: Follower's routine: Checking recent hearbeat
+*/
+func (rf *Raft) followerRoutine() {
+	rf.mu.Lock()
+	rf.recent_heartbeat = false
+	election_timeout := rf.election_timeout
+	rf.mu.Unlock()
 
-				rf.mu.Lock()
-				if rf.state != 1 {
-					rf.mu.Unlock()
-					break
-				}
-				if rf.vote_count > num_server/2 {
-					log.Printf("Candidate %v obtained majority vote, now becomes leader... (Current term: %v)", rf.me, rf.current_term)
-					rf.state = 2
-					rf.mu.Unlock()
-					break
-				} else {
-					log.Printf("Candidate %v sees split vote, starting new election... (Current term: %v)", rf.me, rf.current_term)
-				}
-				rf.mu.Unlock()
+	// Sleep for an election timeout
+	time.Sleep(time.Duration(election_timeout) * time.Millisecond)
+
+	rf.mu.Lock()
+	if rf.recent_heartbeat {
+		// Re-randomize election timeout
+		rand.Seed(time.Now().UnixNano())
+		rf.election_timeout = rand.Intn(election_timeout_up-election_timeout_lb) + election_timeout_lb
+	} else {
+		log.Printf("Follower %v fails to receive recent heartbeat, converting to Candidate... (Current term: %v)", rf.me, rf.current_term)
+		// Convert to Candidate
+		rf.state = 1
+	}
+	rf.mu.Unlock()
+}
+
+/*
+ @brief: Candidate's routine: Trying to obtain votes until leader emerges
+*/
+func (rf *Raft) candidateRoutine() {
+	for {
+		rf.mu.Lock()
+		me := rf.me
+		// Increment term
+		rf.current_term += 1
+		// Vote for self
+		rf.vote_count = 1
+		// Reset election timeout
+		rand.Seed(time.Now().UnixNano())
+		rf.election_timeout = rand.Intn(election_timeout_up-election_timeout_lb) + election_timeout_lb
+		election_timeout := rf.election_timeout
+		rf.mu.Unlock()
+
+		// Send vote request
+		for i := 0; i < len(rf.peers); i++ {
+			if i != me {
+				go rf.sendRequestVote(i)
 			}
 		}
+
+		// Sleep for an election timeout
+		time.Sleep(time.Duration(election_timeout) * time.Millisecond)
+
+		rf.mu.Lock()
+		if rf.state != 1 {
+			rf.mu.Unlock()
+			break
+		}
+		if rf.vote_count > len(rf.peers)/2 {
+			log.Printf("Candidate %v obtained majority vote, now becomes leader... (Current term: %v)", rf.me, rf.current_term)
+			rf.state = 2
+			rf.mu.Unlock()
+			break
+		} else {
+			log.Printf("Candidate %v sees split vote, starting new election... (Current term: %v)", rf.me, rf.current_term)
+		}
+		rf.mu.Unlock()
 	}
 }
 
