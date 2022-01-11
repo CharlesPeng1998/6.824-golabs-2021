@@ -74,17 +74,23 @@ type Raft struct {
 	me        int                 // this peer's index into peers[]
 	dead      int32               // set by Kill()
 
-	current_term     int
+	// These three states will be persistent
+	current_term int
+	voted_for    int
+	log          []LogEntry
+
 	state            int // 0 for follower, 1 for candidate, 2 for leader
 	election_timeout int
 	recent_heartbeat bool
 	vote_count       int
-	voted_for        int
-	log              []LogEntry
+	commit_index     int
+	last_applied     int
 }
 
 type LogEntry struct {
-	// TODO
+	Term    int
+	Index   int
+	Command interface{}
 }
 
 // return currentTerm and whether this server
@@ -164,8 +170,8 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 // field names must start with capital letters!
 //
 type RequestVoteArgs struct {
-	Current_term int
-	CandidateID  int
+	CurrentTerm int
+	CandidateId int
 }
 
 //
@@ -173,17 +179,17 @@ type RequestVoteArgs struct {
 // field names must start with capital letters!
 //
 type RequestVoteReply struct {
-	Current_term int
-	Vote_granted bool
+	CurrentTerm int
+	VoteGranted bool
 }
 
 type AppendEntriesArgs struct {
-	Current_term int
-	Entries      []LogEntry
+	CurrentTerm int
+	Entries     []LogEntry
 }
 
 type AppendEntriesReply struct {
-	Current_term int
+	CurrentTerm int
 }
 
 //
@@ -195,19 +201,19 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.recent_heartbeat = true
 	rf.mu.Unlock()
 
-	if args.Current_term > current_term {
-		rf.updateTerm(args.Current_term)
+	if args.CurrentTerm > current_term {
+		rf.updateTerm(args.CurrentTerm)
 	}
 
 	rf.mu.Lock()
-	if rf.current_term == args.Current_term && rf.state == 0 && rf.voted_for == -1 {
-		reply.Vote_granted = true
-		rf.voted_for = args.CandidateID
-		log.Printf("Follower %v votes for Candidate %v... (Current term: %v)", rf.me, args.CandidateID, rf.current_term)
+	if rf.current_term == args.CurrentTerm && rf.state == 0 && rf.voted_for == -1 {
+		reply.VoteGranted = true
+		rf.voted_for = args.CandidateId
+		log.Printf("Follower %v votes for Candidate %v... (Current term: %v)", rf.me, args.CandidateId, rf.current_term)
 	} else {
-		reply.Vote_granted = false
+		reply.VoteGranted = false
 	}
-	reply.Current_term = rf.current_term
+	reply.CurrentTerm = rf.current_term
 	rf.mu.Unlock()
 }
 
@@ -223,11 +229,11 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	if len(args.Entries) == 0 { // Heartbeat
 
-		if args.Current_term > current_term { // See larger term
-			rf.updateTerm(args.Current_term)
-			reply.Current_term = args.Current_term
+		if args.CurrentTerm > current_term { // See larger term
+			rf.updateTerm(args.CurrentTerm)
+			reply.CurrentTerm = args.CurrentTerm
 		} else {
-			reply.Current_term = current_term
+			reply.CurrentTerm = current_term
 		}
 
 		if current_state == 1 { // Candidate reverts to Follower
@@ -250,13 +256,13 @@ func (rf *Raft) sendRequestVote(server int) {
 
 	log.Printf("Candidate %v is sending vote request to server %v... (Current term: %v)", candidate_id, server, current_term)
 
-	args := RequestVoteArgs{Current_term: current_term, CandidateID: candidate_id}
+	args := RequestVoteArgs{CurrentTerm: current_term, CandidateId: candidate_id}
 	reply := RequestVoteReply{}
 	ok := rf.peers[server].Call("Raft.RequestVote", &args, &reply)
 
 	if ok {
-		server_term := reply.Current_term
-		vote_granted := reply.Vote_granted
+		server_term := reply.CurrentTerm
+		vote_granted := reply.VoteGranted
 		if server_term > current_term { // Candidate out of date
 			log.Printf("Candidate %v's term %v is out of date (newer term %v), reverting to follower...", candidate_id, current_term, server_term)
 			rf.updateTerm(server_term)
@@ -280,13 +286,13 @@ func (rf *Raft) sendHeartBeat(server int) {
 	rf.mu.Unlock()
 
 	log.Printf("Leader %v is sending heartbeat to server %v... (Current term: %v)", id, server, current_term)
-	args := AppendEntriesArgs{Current_term: current_term, Entries: []LogEntry{}}
+	args := AppendEntriesArgs{CurrentTerm: current_term, Entries: []LogEntry{}}
 	reply := AppendEntriesReply{}
 
 	ok := rf.peers[server].Call("Raft.AppendEntries", &args, &reply)
 
 	if ok {
-		server_term := reply.Current_term
+		server_term := reply.CurrentTerm
 		if server_term > current_term {
 			log.Printf("Leader %v's term %v is out of date (newer term %v), reverting to follower...", id, current_term, server_term)
 			rf.updateTerm(server_term)
@@ -476,6 +482,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.me = me
 	rf.current_term = 0
 	rf.state = 0
+	rf.commit_index = -1
+	rf.last_applied = -1
 	rand.Seed(time.Now().UnixNano())
 	rf.election_timeout = rand.Intn(election_timeout_up-election_timeout_lb) + election_timeout_lb
 
