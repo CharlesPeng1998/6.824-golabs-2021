@@ -88,8 +88,6 @@ type Raft struct {
 }
 
 type LogEntry struct {
-	Term    int
-	Index   int
 	Command interface{}
 }
 
@@ -170,8 +168,10 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 // field names must start with capital letters!
 //
 type RequestVoteArgs struct {
-	CurrentTerm int
-	CandidateId int
+	CurrentTerm  int
+	CandidateId  int
+	LastLogIndex int
+	LastLogTerm  int
 }
 
 //
@@ -184,12 +184,17 @@ type RequestVoteReply struct {
 }
 
 type AppendEntriesArgs struct {
-	CurrentTerm int
-	Entries     []LogEntry
+	CurrentTerm  int
+	LeaderId     int
+	PrevLogIndex int
+	PrevLogTerm  int
+	Entries      []LogEntry
+	LeaderCommit int
 }
 
 type AppendEntriesReply struct {
 	CurrentTerm int
+	Success     bool
 }
 
 //
