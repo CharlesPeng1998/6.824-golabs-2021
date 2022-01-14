@@ -85,16 +85,18 @@ type Raft struct {
 	vote_count       int
 	commit_index     int
 	last_applied     int
+	next_index       []int
 }
 
 type LogEntry struct {
+	Term    int
 	Command interface{}
 }
 
 // return currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
-	var term int
+	var term int = -1
 	var isleader bool
 
 	rf.mu.Lock()
@@ -193,8 +195,9 @@ type AppendEntriesArgs struct {
 }
 
 type AppendEntriesReply struct {
-	CurrentTerm int
-	Success     bool
+	CurrentTerm        int
+	FirstConflictIndex int
+	Success            bool
 }
 
 //
@@ -211,10 +214,23 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	}
 
 	rf.mu.Lock()
-	if rf.current_term == args.CurrentTerm && rf.state == 0 && rf.voted_for == -1 {
-		reply.VoteGranted = true
-		rf.voted_for = args.CandidateId
-		log.Printf("Follower %v votes for Candidate %v... (Current term: %v)", rf.me, args.CandidateId, rf.current_term)
+	if rf.current_term == args.CurrentTerm && rf.state == 0 && (rf.voted_for == -1 || rf.voted_for == args.CandidateId) {
+		// Election restriction
+		// TODO: Fix the out of range index problem
+		if args.LastLogTerm == -1 && args.LastLogIndex == -1 && len(rf.log) == 0 {
+			reply.VoteGranted = true
+			rf.voted_for = args.CandidateId
+		} else if args.LastLogTerm == rf.log[len(rf.log)-1].Term && args.LastLogIndex >= len(rf.log)-1 {
+			reply.VoteGranted = true
+			rf.voted_for = args.CandidateId
+			log.Printf("Follower %v votes for Candidate %v... (Current term: %v)", rf.me, args.CandidateId, rf.current_term)
+		} else if args.LastLogTerm != rf.log[len(rf.log)-1].Term && args.LastLogTerm >= rf.log[len(rf.log)-1].Term {
+			reply.VoteGranted = true
+			rf.voted_for = args.CandidateId
+			log.Printf("Follower %v votes for Candidate %v... (Current term: %v)", rf.me, args.CandidateId, rf.current_term)
+		} else {
+			reply.VoteGranted = false
+		}
 	} else {
 		reply.VoteGranted = false
 	}
@@ -232,36 +248,89 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	rf.recent_heartbeat = true
 	rf.mu.Unlock()
 
-	if len(args.Entries) == 0 { // Heartbeat
+	// TODO: Apply commited log entries to local state machine?
 
-		if args.CurrentTerm > current_term { // See larger term
-			rf.updateTerm(args.CurrentTerm)
-			reply.CurrentTerm = args.CurrentTerm
-		} else {
-			reply.CurrentTerm = current_term
+	// Update current term if seeing larger term
+	if args.CurrentTerm > current_term {
+		rf.updateTerm(args.CurrentTerm)
+		reply.CurrentTerm = args.CurrentTerm
+	} else if args.CurrentTerm == current_term {
+		reply.CurrentTerm = current_term
+	} else if args.CurrentTerm < current_term { // Leader is out-dated -> Return false
+		reply.CurrentTerm = current_term
+		reply.Success = false
+		return
+	}
+
+	var consistent bool
+	prev_log_index := args.PrevLogIndex
+	prev_log_term := args.PrevLogTerm
+	first_conflict_index := prev_log_index
+
+	rf.mu.Lock()
+	// Consistency check
+	if prev_log_index == -1 { // Leader sends all its entries -> Consistent
+		consistent = true
+	} else if len(rf.log)-1 < prev_log_index { // No entry at prevLogIndex -> Inconsistent
+		consistent = false
+		first_conflict_index = len(rf.log)
+	} else if rf.log[prev_log_index].Term != prev_log_term { // Terms conflict at prevLogIndex -> Inconsistent
+		consistent = false
+		conflict_term := rf.log[prev_log_index].Term
+		// Find the first index with conflicting term
+		for {
+			if first_conflict_index > 0 && rf.log[first_conflict_index-1].Term == conflict_term {
+				first_conflict_index -= 1
+			} else {
+				break
+			}
 		}
+	} else { // Consistent
+		consistent = true
+	}
 
-		if current_state == 1 { // Candidate reverts to Follower
-			rf.mu.Lock()
+	// Handling with heartbeat or appending entries
+	if len(args.Entries) == 0 { // Heartbeat
+		// Candidate reverts to Follower
+		if current_state == 1 {
 			rf.state = 0
-			rf.mu.Unlock()
+		}
+		if consistent {
+			reply.Success = true
+		} else {
+			reply.Success = false
+			reply.FirstConflictIndex = first_conflict_index
+		}
+	} else { // Append entries
+		if consistent {
+			rf.log = append(rf.log[0:prev_log_index+1], args.Entries...)
+			reply.Success = true
+		} else {
+			reply.Success = false
+			reply.FirstConflictIndex = first_conflict_index
 		}
 	}
-	// TODO: Implement this in later part of Lab 2
+	rf.mu.Unlock()
 }
 
 //
 // Send a RequestVote RPC to a server.
 //
 func (rf *Raft) sendRequestVote(server int) {
+	var last_log_term, last_log_index int
 	rf.mu.Lock()
 	current_term := rf.current_term
 	candidate_id := rf.me
+	if len(rf.log) == 0 {
+		last_log_term, last_log_index = -1, -1
+	} else {
+		last_log_term, last_log_index = rf.log[len(rf.log)-1].Term, len(rf.log)-1
+	}
 	rf.mu.Unlock()
 
 	log.Printf("Candidate %v is sending vote request to server %v... (Current term: %v)", candidate_id, server, current_term)
 
-	args := RequestVoteArgs{CurrentTerm: current_term, CandidateId: candidate_id}
+	args := RequestVoteArgs{CurrentTerm: current_term, CandidateId: candidate_id, LastLogTerm: last_log_term, LastLogIndex: last_log_index}
 	reply := RequestVoteReply{}
 	ok := rf.peers[server].Call("Raft.RequestVote", &args, &reply)
 
@@ -288,19 +357,32 @@ func (rf *Raft) sendHeartBeat(server int) {
 	rf.mu.Lock()
 	id := rf.me
 	current_term := rf.current_term
+	prev_log_index := rf.next_index[server] - 1
+	var prev_log_term int
+	if prev_log_index < 0 {
+		prev_log_term = -1
+	} else {
+		prev_log_term = rf.log[prev_log_index].Term
+	}
+	leader_commit := rf.commit_index
 	rf.mu.Unlock()
 
 	log.Printf("Leader %v is sending heartbeat to server %v... (Current term: %v)", id, server, current_term)
-	args := AppendEntriesArgs{CurrentTerm: current_term, Entries: []LogEntry{}}
+	args := AppendEntriesArgs{CurrentTerm: current_term, LeaderId: id,
+		PrevLogIndex: prev_log_index, PrevLogTerm: prev_log_term,
+		Entries: []LogEntry{}, LeaderCommit: leader_commit}
 	reply := AppendEntriesReply{}
 
 	ok := rf.peers[server].Call("Raft.AppendEntries", &args, &reply)
 
 	if ok {
-		server_term := reply.CurrentTerm
-		if server_term > current_term {
-			log.Printf("Leader %v's term %v is out of date (newer term %v), reverting to follower...", id, current_term, server_term)
-			rf.updateTerm(server_term)
+		if reply.CurrentTerm > current_term { // This leader is out-dated
+			log.Printf("Leader %v's term %v is out of date (newer term %v), reverting to follower...", id, current_term, reply.CurrentTerm)
+			rf.updateTerm(reply.CurrentTerm)
+		} else if reply.Success == false { // Update nextIndex
+			rf.mu.Lock()
+			rf.next_index[server] = reply.FirstConflictIndex
+			rf.mu.Unlock()
 		}
 	} else {
 		log.Printf("Leader %v fails to contact server %v! (Current term: %v)", id, server, current_term)
@@ -320,6 +402,16 @@ func (rf *Raft) updateTerm(new_term int) {
 	rf.mu.Unlock()
 }
 
+/*
+ @brief Append log entry with given command into local log
+*/
+func (rf *Raft) appendEntryLocal(command interface{}) {
+	rf.mu.Lock()
+	log_entry := LogEntry{Term: rf.current_term, Command: command}
+	rf.log = append(rf.log, log_entry)
+	rf.mu.Unlock()
+}
+
 //
 // the service using Raft (e.g. a k/v server) wants to start
 // agreement on the next command to be appended to Raft's log. if this
@@ -336,10 +428,12 @@ func (rf *Raft) updateTerm(new_term int) {
 //
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	index := -1
-	term := -1
-	isLeader := true
+	term, isLeader := rf.GetState()
 
-	// Your code here (2B).
+	if isLeader {
+		rf.appendEntryLocal(command)
+		// TODO: Trigger sending AppendEntries, maybe use conditional varibales?
+	}
 
 	return index, term, isLeader
 }
@@ -435,6 +529,7 @@ func (rf *Raft) candidateRoutine() {
 		rf.current_term += 1
 		// Vote for self
 		rf.vote_count = 1
+		rf.voted_for = rf.me
 		// Reset election timeout
 		rand.Seed(time.Now().UnixNano())
 		rf.election_timeout = rand.Intn(election_timeout_up-election_timeout_lb) + election_timeout_lb
@@ -459,6 +554,11 @@ func (rf *Raft) candidateRoutine() {
 		if rf.vote_count > len(rf.peers)/2 {
 			log.Printf("Candidate %v obtained majority vote, now becomes leader... (Current term: %v)", rf.me, rf.current_term)
 			rf.state = 2
+			rf.next_index = make([]int, len(rf.peers))
+			// Initialize nextIndex for leader
+			for i := 0; i < len(rf.next_index); i++ {
+				rf.next_index[i] = len(rf.log)
+			}
 			rf.mu.Unlock()
 			break
 		} else {
