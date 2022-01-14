@@ -216,7 +216,6 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.mu.Lock()
 	if rf.current_term == args.CurrentTerm && rf.state == 0 && (rf.voted_for == -1 || rf.voted_for == args.CandidateId) {
 		// Election restriction
-		// TODO: Fix the out of range index problem
 		if args.LastLogTerm == -1 && args.LastLogIndex == -1 && len(rf.log) == 0 {
 			reply.VoteGranted = true
 			rf.voted_for = args.CandidateId
