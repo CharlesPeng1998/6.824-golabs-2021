@@ -86,6 +86,7 @@ type Raft struct {
 	commit_index     int
 	last_applied     int
 	next_index       []int
+	match_index      []int
 }
 
 type LogEntry struct {
@@ -261,46 +262,38 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		return
 	}
 
-	var consistent bool
-	prev_log_index := args.PrevLogIndex
-	prev_log_term := args.PrevLogTerm
-	first_conflict_index := prev_log_index
-
 	rf.mu.Lock()
-	// Consistency check
-	if prev_log_index == -1 { // Leader sends all its entries -> Consistent
-		consistent = true
-	} else if len(rf.log)-1 < prev_log_index { // No entry at prevLogIndex -> Inconsistent
-		consistent = false
-		first_conflict_index = len(rf.log)
-	} else if rf.log[prev_log_index].Term != prev_log_term { // Terms conflict at prevLogIndex -> Inconsistent
-		consistent = false
-		conflict_term := rf.log[prev_log_index].Term
-		// Find the first index with conflicting term
-		for {
-			if first_conflict_index > 0 && rf.log[first_conflict_index-1].Term == conflict_term {
-				first_conflict_index -= 1
-			} else {
-				break
-			}
-		}
-	} else { // Consistent
-		consistent = true
-	}
-
-	// Handling with heartbeat or appending entries
 	if len(args.Entries) == 0 { // Heartbeat
-		// Candidate reverts to Follower
 		if current_state == 1 {
 			rf.state = 0
 		}
-		if consistent {
-			reply.Success = true
-		} else {
-			reply.Success = false
-			reply.FirstConflictIndex = first_conflict_index
-		}
 	} else { // Append entries
+		// Consistency check
+		var consistent bool
+		prev_log_index := args.PrevLogIndex
+		prev_log_term := args.PrevLogTerm
+		first_conflict_index := prev_log_index
+
+		if prev_log_index == -1 { // Leader sends all its entries -> Consistent
+			consistent = true
+		} else if len(rf.log)-1 < prev_log_index { // No entry at prevLogIndex -> Inconsistent
+			consistent = false
+			first_conflict_index = len(rf.log)
+		} else if rf.log[prev_log_index].Term != prev_log_term { // Terms conflict at prevLogIndex -> Inconsistent
+			consistent = false
+			conflict_term := rf.log[prev_log_index].Term
+			// Find the first index with conflict term
+			for {
+				if first_conflict_index > 0 && rf.log[first_conflict_index-1].Term == conflict_term {
+					first_conflict_index -= 1
+				} else {
+					break
+				}
+			}
+		} else {
+			consistent = true
+		}
+
 		if consistent {
 			rf.log = append(rf.log[0:prev_log_index+1], args.Entries...)
 			reply.Success = true
@@ -312,9 +305,9 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	rf.mu.Unlock()
 }
 
-//
-// Send a RequestVote RPC to a server.
-//
+/*
+ @brief: Send a RequestVote RPC to a server.
+*/
 func (rf *Raft) sendRequestVote(server int) {
 	var last_log_term, last_log_index int
 	rf.mu.Lock()
@@ -349,10 +342,37 @@ func (rf *Raft) sendRequestVote(server int) {
 	}
 }
 
-//
-// Send a hearbeat (empty AppendEntries RPC) to a server
-//
+/*
+ @brief: Send a hearbeat (empty AppendEntries RPC) to a server
+*/
 func (rf *Raft) sendHeartBeat(server int) {
+	rf.mu.Lock()
+	id := rf.me
+	current_term := rf.current_term
+	leader_commit := rf.commit_index
+	rf.mu.Unlock()
+
+	log.Printf("Leader %v is sending heartbeat to server %v... (Current term: %v)", id, server, current_term)
+	args := AppendEntriesArgs{CurrentTerm: current_term, LeaderId: id,
+		Entries: []LogEntry{}, LeaderCommit: leader_commit}
+	reply := AppendEntriesReply{}
+
+	ok := rf.peers[server].Call("Raft.AppendEntries", &args, &reply)
+
+	if ok {
+		if reply.CurrentTerm > current_term { // This leader is out-dated
+			log.Printf("Leader %v's term %v is out of date (newer term %v), reverting to follower...", id, current_term, reply.CurrentTerm)
+			rf.updateTerm(reply.CurrentTerm)
+		}
+	} else {
+		log.Printf("Leader %v fails to send heartbeat server %v! (Current term: %v)", id, server, current_term)
+	}
+}
+
+/*
+ @brief: Send log entries to a server
+*/
+func (rf *Raft) sendLogEntries(server int) {
 	rf.mu.Lock()
 	id := rf.me
 	current_term := rf.current_term
@@ -364,12 +384,13 @@ func (rf *Raft) sendHeartBeat(server int) {
 		prev_log_term = rf.log[prev_log_index].Term
 	}
 	leader_commit := rf.commit_index
+	entries := rf.log[rf.next_index[server]:len(rf.log)]
 	rf.mu.Unlock()
 
-	log.Printf("Leader %v is sending heartbeat to server %v... (Current term: %v)", id, server, current_term)
+	log.Printf("Leader %v is sending log entries (Index starting from %v) to server %v... (Current term: %v)", id, prev_log_index+1, server, current_term)
 	args := AppendEntriesArgs{CurrentTerm: current_term, LeaderId: id,
 		PrevLogIndex: prev_log_index, PrevLogTerm: prev_log_term,
-		Entries: []LogEntry{}, LeaderCommit: leader_commit}
+		Entries: entries, LeaderCommit: leader_commit}
 	reply := AppendEntriesReply{}
 
 	ok := rf.peers[server].Call("Raft.AppendEntries", &args, &reply)
@@ -378,13 +399,20 @@ func (rf *Raft) sendHeartBeat(server int) {
 		if reply.CurrentTerm > current_term { // This leader is out-dated
 			log.Printf("Leader %v's term %v is out of date (newer term %v), reverting to follower...", id, current_term, reply.CurrentTerm)
 			rf.updateTerm(reply.CurrentTerm)
-		} else if reply.Success == false { // Update nextIndex
+		} else if reply.Success == false { // Inconsistency -> Update nextIndex
 			rf.mu.Lock()
 			rf.next_index[server] = reply.FirstConflictIndex
 			rf.mu.Unlock()
+			log.Printf("Leader %v's log is inconsistent with server %v! First conflict index is %v... (Current term: %v)", id, server, reply.FirstConflictIndex, current_term)
+		} else { // Success
+			rf.mu.Lock()
+			rf.next_index[server] = len(rf.log)
+			rf.match_index[server] = len(rf.log) - 1
+			rf.mu.Unlock()
+			log.Printf("Leader %v succeeded to append log entries to server %v! (Current term: %v)", id, server, current_term)
 		}
 	} else {
-		log.Printf("Leader %v fails to contact server %v! (Current term: %v)", id, server, current_term)
+		log.Printf("Leader %v fails to send AppendEntries RPC to server %v! (Current term: %v)", id, server, current_term)
 	}
 }
 
@@ -489,6 +517,9 @@ func (rf *Raft) leaderRoutine() {
 			go rf.sendHeartBeat(i)
 		}
 	}
+
+	// TODO: AppendEntries
+
 	time.Sleep(100 * time.Millisecond)
 }
 
@@ -554,9 +585,11 @@ func (rf *Raft) candidateRoutine() {
 			log.Printf("Candidate %v obtained majority vote, now becomes leader... (Current term: %v)", rf.me, rf.current_term)
 			rf.state = 2
 			rf.next_index = make([]int, len(rf.peers))
+			rf.match_index = make([]int, len(rf.peers))
 			// Initialize nextIndex for leader
 			for i := 0; i < len(rf.next_index); i++ {
 				rf.next_index[i] = len(rf.log)
+				rf.match_index[i] = -1
 			}
 			rf.mu.Unlock()
 			break
