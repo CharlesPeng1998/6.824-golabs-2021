@@ -431,12 +431,15 @@ func (rf *Raft) updateTerm(new_term int) {
 
 /*
  @brief Append log entry with given command into local log
+ @return Index of newly appended log entry
 */
-func (rf *Raft) appendEntryLocal(command interface{}) {
+func (rf *Raft) appendEntryLocal(command interface{}) int {
 	rf.mu.Lock()
 	log_entry := LogEntry{Term: rf.current_term, Command: command}
 	rf.log = append(rf.log, log_entry)
+	index := len(rf.log) - 1
 	rf.mu.Unlock()
+	return index
 }
 
 //
@@ -458,8 +461,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	term, isLeader := rf.GetState()
 
 	if isLeader {
-		rf.appendEntryLocal(command)
-		// TODO: Trigger sending AppendEntries, maybe use conditional varibales?
+		index = rf.appendEntryLocal(command)
 	}
 
 	return index, term, isLeader
@@ -486,16 +488,17 @@ func (rf *Raft) killed() bool {
 	return z == 1
 }
 
-// The ticker go routine starts a new election if this peer hasn't received
-// heartsbeats recently.
-func (rf *Raft) ticker() {
+/*
+ @brief: The ticker is responsible for running server duties
+*/
+func (rf *Raft) ticker(applyCh chan ApplyMsg) {
 	for rf.killed() == false {
 		rf.mu.Lock()
 		server_state := rf.state
 		rf.mu.Unlock()
 
 		if server_state == 2 { // Leader
-			rf.leaderRoutine()
+			rf.leaderRoutine(applyCh)
 		} else if server_state == 0 { // Follower
 			rf.followerRoutine()
 		} else if server_state == 1 { // Candidate
@@ -505,22 +508,71 @@ func (rf *Raft) ticker() {
 }
 
 /*
- @brief: Leader's routine: Sending out hearbeat
+ @brief: Leader's routine:
+ 		 Sending out hearbeat;
+		 Sending log entries;
+		 Commit log entries;
+		 Apply log entries;
 */
-func (rf *Raft) leaderRoutine() {
+func (rf *Raft) leaderRoutine(applyCh chan ApplyMsg) {
 	rf.mu.Lock()
 	me := rf.me
 	num_server := len(rf.peers)
 	rf.mu.Unlock()
+
+	// Leader sending heartbeat
 	for i := 0; i < num_server; i++ {
 		if i != me {
 			go rf.sendHeartBeat(i)
 		}
 	}
 
-	// TODO: AppendEntries
+	// Leader sending log entries
+	for i := 0; i < num_server; i++ {
+		if i != me {
+			rf.mu.Lock()
+			next_id := rf.next_index[i]
+			last_log_index := len(rf.log) - 1
+			rf.mu.Unlock()
+
+			if last_log_index >= next_id {
+				go rf.sendLogEntries(i)
+			}
+		}
+	}
 
 	time.Sleep(100 * time.Millisecond)
+
+	rf.mu.Lock()
+	// Commit those uncommitted log entries
+	for index := rf.commit_index + 1; index < len(rf.log); index++ {
+		if rf.log[index].Term != rf.current_term {
+			break
+		}
+		cnt := 0
+		for i := 0; i < len(rf.peers); i++ {
+			if i != rf.me && rf.match_index[i] >= index {
+				cnt += 1
+			}
+		}
+		if cnt > len(rf.peers)/2 {
+			rf.commit_index = index
+		} else {
+			break
+		}
+	}
+
+	// Apply those unapplied command
+	for index := rf.last_applied + 1; index <= rf.commit_index; index++ {
+		apply_msg := ApplyMsg{CommandValid: true, Command: rf.log[index].Command, CommandIndex: index}
+		select {
+		case applyCh <- apply_msg:
+			log.Printf("Command %v has been applied!", index)
+		case <-time.After(10 * time.Millisecond):
+			log.Printf("Fail to apply command %v in 10 ms!", index)
+		}
+	}
+	rf.mu.Unlock()
 }
 
 /*
@@ -628,7 +680,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.readPersist(persister.ReadRaftState())
 
 	// start ticker goroutine to start elections
-	go rf.ticker()
+	go rf.ticker(applyCh)
 
 	return rf
 }
