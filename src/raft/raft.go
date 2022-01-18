@@ -248,8 +248,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	rf.recent_heartbeat = true
 	rf.mu.Unlock()
 
-	// TODO: Apply commited log entries to local state machine?
-
 	// Update current term if seeing larger term
 	if args.CurrentTerm > current_term {
 		rf.updateTerm(args.CurrentTerm)
@@ -300,6 +298,17 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		} else {
 			reply.Success = false
 			reply.FirstConflictIndex = first_conflict_index
+		}
+	}
+	rf.mu.Unlock()
+
+	// Update committed log entries
+	rf.mu.Lock()
+	if args.LeaderCommit > rf.commit_index {
+		if args.LeaderCommit <= len(rf.log)-1 {
+			rf.commit_index = args.LeaderCommit
+		} else {
+			rf.commit_index = len(rf.log) - 1
 		}
 	}
 	rf.mu.Unlock()
@@ -500,7 +509,7 @@ func (rf *Raft) ticker(applyCh chan ApplyMsg) {
 		if server_state == 2 { // Leader
 			rf.leaderRoutine(applyCh)
 		} else if server_state == 0 { // Follower
-			rf.followerRoutine()
+			rf.followerRoutine(applyCh)
 		} else if server_state == 1 { // Candidate
 			rf.candidateRoutine()
 		}
@@ -567,9 +576,9 @@ func (rf *Raft) leaderRoutine(applyCh chan ApplyMsg) {
 		apply_msg := ApplyMsg{CommandValid: true, Command: rf.log[index].Command, CommandIndex: index}
 		select {
 		case applyCh <- apply_msg:
-			log.Printf("Command %v has been applied!", index)
+			log.Printf("Command %v has been applied in server %v!", index, rf.me)
 		case <-time.After(10 * time.Millisecond):
-			log.Printf("Fail to apply command %v in 10 ms!", index)
+			log.Printf("Fail to apply command %v in 10 ms in server %v!", index, rf.me)
 		}
 	}
 	rf.mu.Unlock()
@@ -578,7 +587,7 @@ func (rf *Raft) leaderRoutine(applyCh chan ApplyMsg) {
 /*
  @brief: Follower's routine: Checking recent hearbeat
 */
-func (rf *Raft) followerRoutine() {
+func (rf *Raft) followerRoutine(applyCh chan ApplyMsg) {
 	rf.mu.Lock()
 	rf.recent_heartbeat = false
 	election_timeout := rf.election_timeout
@@ -596,6 +605,17 @@ func (rf *Raft) followerRoutine() {
 		log.Printf("Follower %v fails to receive recent heartbeat, converting to Candidate... (Current term: %v)", rf.me, rf.current_term)
 		// Convert to Candidate
 		rf.state = 1
+	}
+
+	// Apply those applied command
+	for index := rf.last_applied + 1; index <= rf.commit_index; index++ {
+		apply_msg := ApplyMsg{CommandValid: true, Command: rf.log[index].Command, CommandIndex: index}
+		select {
+		case applyCh <- apply_msg:
+			log.Printf("Command %v has been applied in server %v!", index, rf.me)
+		case <-time.After(10 * time.Millisecond):
+			log.Printf("Fail to apply command %v in 10 ms in server %v!", index, rf.me)
+		}
 	}
 	rf.mu.Unlock()
 }
