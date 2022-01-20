@@ -383,7 +383,7 @@ func (rf *Raft) sendHeartBeat(server int) {
 			rf.updateTerm(reply.CurrentTerm)
 		}
 	} else {
-		log.Printf("Leader %v fails to send heartbeat server %v! (Current term: %v)", id, server, current_term)
+		log.Printf("Leader %v fails to send heartbeat to server %v! (Current term: %v)", id, server, current_term)
 	}
 }
 
@@ -538,6 +538,7 @@ func (rf *Raft) leaderRoutine(applyCh chan ApplyMsg) {
 	rf.mu.Lock()
 	me := rf.me
 	num_server := len(rf.peers)
+	current_term := rf.current_term
 	rf.mu.Unlock()
 
 	// Leader sending heartbeat
@@ -556,6 +557,7 @@ func (rf *Raft) leaderRoutine(applyCh chan ApplyMsg) {
 			rf.mu.Unlock()
 
 			if last_log_index >= next_index {
+				log.Printf("Debug: lastLogIndex = %v, nextIndex of server %v = %v", last_log_index, i, next_index)
 				go rf.sendLogEntries(i)
 			}
 		}
@@ -567,10 +569,11 @@ func (rf *Raft) leaderRoutine(applyCh chan ApplyMsg) {
 	// Commit those uncommitted log entries
 	for index := rf.commit_index + 1; index <= rf.last_included_index+len(rf.log); index++ {
 		log_offset := index - rf.last_included_index - 1
-		if rf.log[log_offset].Term != rf.current_term {
-			break
+		// TODO: Here rf.current_term might already be changed due to seeing newly-connected follower
+		if rf.log[log_offset].Term != current_term {
+			continue
 		}
-		cnt := 0
+		cnt := 1
 		for i := 0; i < len(rf.peers); i++ {
 			if i != rf.me && rf.match_index[i] >= index {
 				cnt += 1
@@ -589,6 +592,7 @@ func (rf *Raft) leaderRoutine(applyCh chan ApplyMsg) {
 		apply_msg := ApplyMsg{CommandValid: true, Command: rf.log[log_offset].Command, CommandIndex: index}
 		select {
 		case applyCh <- apply_msg:
+			rf.last_applied = index
 			log.Printf("Command %v has been applied in server %v!", index, rf.me)
 		case <-time.After(10 * time.Millisecond):
 			log.Printf("Fail to apply command %v in 10 ms in server %v!", index, rf.me)
@@ -626,6 +630,7 @@ func (rf *Raft) followerRoutine(applyCh chan ApplyMsg) {
 		apply_msg := ApplyMsg{CommandValid: true, Command: rf.log[log_offset].Command, CommandIndex: index}
 		select {
 		case applyCh <- apply_msg:
+			rf.last_applied = index
 			log.Printf("Command %v has been applied in server %v!", index, rf.me)
 		case <-time.After(10 * time.Millisecond):
 			log.Printf("Fail to apply command %v in 10 ms in server %v!", index, rf.me)
