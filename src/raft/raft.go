@@ -20,10 +20,8 @@ package raft
 import (
 	//	"bytes"
 
-	"fmt"
 	"log"
 	"math/rand"
-	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -32,13 +30,13 @@ import (
 	"6.824/labrpc"
 )
 
-func init() {
-	log_file, err := os.OpenFile("raft.log", os.O_WRONLY|os.O_CREATE, 0666)
-	if err != nil {
-		fmt.Println("Fail to open log file!", err)
-	}
-	log.SetOutput(log_file)
-}
+// func init() {
+// 	log_file, err := os.OpenFile("raft.log", os.O_WRONLY|os.O_CREATE, 0666)
+// 	if err != nil {
+// 		fmt.Println("Fail to open log file!", err)
+// 	}
+// 	log.SetOutput(log_file)
+// }
 
 //
 // as each Raft peer becomes aware that successive log entries are
@@ -212,9 +210,7 @@ type AppendEntriesReply struct {
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.mu.Lock()
 	current_term := rf.current_term
-	rf.recent_heartbeat = true
 	rf.mu.Unlock()
-
 	if args.CurrentTerm > current_term {
 		rf.updateTerm(args.CurrentTerm)
 	}
@@ -232,10 +228,12 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		if args.LastLogTerm == last_log_term && args.LastLogIndex >= last_log_index {
 			reply.VoteGranted = true
 			rf.voted_for = args.CandidateId
+			rf.recent_heartbeat = true
 			log.Printf("Follower %v votes for Candidate %v... (Current term: %v)", rf.me, args.CandidateId, rf.current_term)
 		} else if args.LastLogTerm != last_log_term && args.LastLogTerm > last_log_term {
 			reply.VoteGranted = true
 			rf.voted_for = args.CandidateId
+			rf.recent_heartbeat = true
 			log.Printf("Follower %v votes for Candidate %v... (Current term: %v)", rf.me, args.CandidateId, rf.current_term)
 		} else {
 			reply.VoteGranted = false
@@ -269,56 +267,59 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		return
 	}
 
+	// Consistency check
 	rf.mu.Lock()
+	var consistent bool
+	prev_log_index := args.PrevLogIndex
+	prev_log_term := args.PrevLogTerm
+
+	if prev_log_index-rf.last_included_index <= 0 { // Leader sends all its entries -> Consistent
+		consistent = true
+	} else if rf.last_included_index+len(rf.log) < prev_log_index { // No entry at prevLogIndex -> Inconsistent
+		consistent = false
+	} else if rf.log[prev_log_index-rf.last_included_index-1].Term != prev_log_term { // Terms conflict at prevLogIndex -> Inconsistent
+		consistent = false
+	} else {
+		consistent = true
+	}
+
+	// Handling heartbeat or appending entries
 	if len(args.Entries) == 0 { // Heartbeat
 		if current_state == 1 {
 			rf.state = 0
 		}
 	} else { // Append entries
-		// Consistency check
-		var consistent bool
-		prev_log_index := args.PrevLogIndex
-		prev_log_term := args.PrevLogTerm
-		first_conflict_index := prev_log_index
-
-		if prev_log_index-rf.last_included_index == 0 { // Leader sends all its entries -> Consistent
-			consistent = true
-		} else if rf.last_included_index+len(rf.log) < prev_log_index { // No entry at prevLogIndex -> Inconsistent
-			consistent = false
-			first_conflict_index = rf.last_included_index + len(rf.log)
-		} else if rf.log[prev_log_index-rf.last_included_index-1].Term != prev_log_term { // Terms conflict at prevLogIndex -> Inconsistent
-			consistent = false
-			conflict_term := rf.log[prev_log_index-rf.last_included_index-1].Term
-			// Find the first index with conflict term
-			for {
-				if first_conflict_index > rf.last_included_index && rf.log[first_conflict_index-rf.last_included_index-1].Term == conflict_term {
-					first_conflict_index -= 1
-				} else {
-					break
-				}
-			}
-		} else {
-			consistent = true
-		}
-
 		if consistent {
 			rf.log = append(rf.log[0:prev_log_index-rf.last_included_index], args.Entries...)
 			reply.Success = true
 		} else {
+			// Get first conflict index
+			if rf.last_included_index+len(rf.log) < prev_log_index {
+				reply.FirstConflictIndex = rf.last_included_index + len(rf.log)
+			} else if rf.log[prev_log_index-rf.last_included_index-1].Term != prev_log_term {
+				conflict_term := rf.log[prev_log_index-rf.last_included_index-1].Term
+				for reply.FirstConflictIndex = prev_log_index; ; {
+					if reply.FirstConflictIndex-rf.last_included_index >= 2 && rf.log[reply.FirstConflictIndex-rf.last_included_index-2].Term == conflict_term {
+						reply.FirstConflictIndex -= 1
+					} else {
+						break
+					}
+				}
+			}
+
 			reply.Success = false
-			reply.FirstConflictIndex = first_conflict_index
 		}
 	}
-	rf.mu.Unlock()
 
 	// Update committed log entries
-	rf.mu.Lock()
-	if args.LeaderCommit > rf.commit_index {
-		if args.LeaderCommit <= rf.last_included_index+len(rf.log) {
+	if consistent && args.LeaderCommit > rf.commit_index {
+		old_commit_index := rf.commit_index
+		if args.LeaderCommit <= prev_log_index+len(args.Entries) {
 			rf.commit_index = args.LeaderCommit
 		} else {
-			rf.commit_index = rf.last_included_index + len(rf.log)
+			rf.commit_index = prev_log_index + len(args.Entries)
 		}
+		log.Printf("Follower %v's commitIndex is updated from %v to %v!", rf.me, old_commit_index, rf.commit_index)
 	}
 	rf.mu.Unlock()
 }
@@ -368,10 +369,21 @@ func (rf *Raft) sendHeartBeat(server int) {
 	id := rf.me
 	current_term := rf.current_term
 	leader_commit := rf.commit_index
+
+	prev_log_index := rf.next_index[server] - 1
+	var prev_log_term int
+	if prev_log_index <= rf.last_included_index {
+		prev_log_term = rf.last_included_term
+	} else {
+		log_offset := prev_log_index - rf.last_included_index - 1
+		prev_log_term = rf.log[log_offset].Term
+	}
+
 	rf.mu.Unlock()
 
 	log.Printf("Leader %v is sending heartbeat to server %v... (Current term: %v)", id, server, current_term)
 	args := AppendEntriesArgs{CurrentTerm: current_term, LeaderId: id,
+		PrevLogIndex: prev_log_index, PrevLogTerm: prev_log_term,
 		Entries: []LogEntry{}, LeaderCommit: leader_commit}
 	reply := AppendEntriesReply{}
 
@@ -569,7 +581,6 @@ func (rf *Raft) leaderRoutine(applyCh chan ApplyMsg) {
 	// Commit those uncommitted log entries
 	for index := rf.commit_index + 1; index <= rf.last_included_index+len(rf.log); index++ {
 		log_offset := index - rf.last_included_index - 1
-		// TODO: Here rf.current_term might already be changed due to seeing newly-connected follower
 		if rf.log[log_offset].Term != current_term {
 			continue
 		}
@@ -614,6 +625,7 @@ func (rf *Raft) followerRoutine(applyCh chan ApplyMsg) {
 	time.Sleep(time.Duration(election_timeout) * time.Millisecond)
 
 	rf.mu.Lock()
+	// TODO: Use select to detect heartbeat?
 	if rf.recent_heartbeat {
 		// Re-randomize election timeout
 		rand.Seed(time.Now().UnixNano())
