@@ -18,8 +18,6 @@ package raft
 //
 
 import (
-	//	"bytes"
-
 	"bytes"
 	"log"
 	"math/rand"
@@ -27,7 +25,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	//	"6.824/labgob"
 	"6.824/labgob"
 	"6.824/labrpc"
 )
@@ -118,18 +115,17 @@ func (rf *Raft) GetState() (int, bool) {
 /*
  @brief Save Raft's persistent state to stable storage,
         where it can later be retrieved after a crash and restart.
+ @Note Thread unsafe, need outside lock,
 */
 func (rf *Raft) persist() {
 	buffer := new(bytes.Buffer)
 	encoder := labgob.NewEncoder(buffer)
 
-	rf.mu.Lock()
 	encoder.Encode(rf.current_term)
 	encoder.Encode(rf.voted_for)
 	encoder.Encode(rf.log)
 	data := buffer.Bytes()
 	rf.persister.SaveRaftState(data)
-	rf.mu.Unlock()
 }
 
 /*
@@ -154,6 +150,7 @@ func (rf *Raft) readPersist(data []byte) {
 		rf.current_term = current_term_r
 		rf.voted_for = voted_for_r
 		rf.log = log_r
+		log.Printf("Server %v recoverd from persisted state: Current term %v, Voted for %v...", rf.me, rf.current_term, rf.voted_for)
 	}
 	rf.mu.Unlock()
 }
@@ -238,11 +235,15 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 			reply.VoteGranted = true
 			rf.voted_for = args.CandidateId
 			rf.recent_heartbeat = true
+			//Persist
+			rf.persist()
 			log.Printf("Follower %v votes for Candidate %v... (Current term: %v)", rf.me, args.CandidateId, rf.current_term)
 		} else if args.LastLogTerm != last_log_term && args.LastLogTerm > last_log_term {
 			reply.VoteGranted = true
 			rf.voted_for = args.CandidateId
 			rf.recent_heartbeat = true
+			//Persist
+			rf.persist()
 			log.Printf("Follower %v votes for Candidate %v... (Current term: %v)", rf.me, args.CandidateId, rf.current_term)
 		} else {
 			reply.VoteGranted = false
@@ -301,6 +302,9 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		if consistent {
 			rf.log = append(rf.log[0:prev_log_index-rf.last_included_index], args.Entries...)
 			reply.Success = true
+
+			// Persist
+			rf.persist()
 		} else {
 			// Get first conflict index
 			if rf.last_included_index+len(rf.log) < prev_log_index {
@@ -467,6 +471,9 @@ func (rf *Raft) updateTerm(new_term int) {
 	rf.current_term = new_term
 	rf.state = 0
 	rf.voted_for = -1
+
+	// Persist
+	rf.persist()
 	rf.mu.Unlock()
 }
 
@@ -479,7 +486,11 @@ func (rf *Raft) appendEntryLocal(command interface{}) int {
 	index := rf.last_included_index + len(rf.log) + 1
 	log_entry := LogEntry{Index: index, Term: rf.current_term, Command: command}
 	rf.log = append(rf.log, log_entry)
+
+	// Persist
+	rf.persist()
 	rf.mu.Unlock()
+
 	return index
 }
 
@@ -672,6 +683,8 @@ func (rf *Raft) candidateRoutine() {
 		// Vote for self
 		rf.vote_count = 1
 		rf.voted_for = rf.me
+		//Persist
+		rf.persist()
 		// Reset election timeout
 		rand.Seed(time.Now().UnixNano())
 		rf.election_timeout = rand.Intn(election_timeout_up-election_timeout_lb) + election_timeout_lb
