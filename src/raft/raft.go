@@ -20,6 +20,7 @@ package raft
 import (
 	//	"bytes"
 
+	"bytes"
 	"log"
 	"math/rand"
 	"sync"
@@ -27,6 +28,7 @@ import (
 	"time"
 
 	//	"6.824/labgob"
+	"6.824/labgob"
 	"6.824/labrpc"
 )
 
@@ -97,8 +99,10 @@ type LogEntry struct {
 	Command interface{}
 }
 
-// return currentTerm and whether this server
-// believes it is the leader.
+/*
+ @brief Return currentTerm and whether this server
+        believes it is the leader.
+*/
 func (rf *Raft) GetState() (int, bool) {
 	var term int = -1
 	var isleader bool
@@ -111,42 +115,47 @@ func (rf *Raft) GetState() (int, bool) {
 	return term, isleader
 }
 
-//
-// save Raft's persistent state to stable storage,
-// where it can later be retrieved after a crash and restart.
-// see paper's Figure 2 for a description of what should be persistent.
-//
+/*
+ @brief Save Raft's persistent state to stable storage,
+        where it can later be retrieved after a crash and restart.
+*/
 func (rf *Raft) persist() {
-	// Your code here (2C).
-	// Example:
-	// w := new(bytes.Buffer)
-	// e := labgob.NewEncoder(w)
-	// e.Encode(rf.xxx)
-	// e.Encode(rf.yyy)
-	// data := w.Bytes()
-	// rf.persister.SaveRaftState(data)
+	buffer := new(bytes.Buffer)
+	encoder := labgob.NewEncoder(buffer)
+
+	rf.mu.Lock()
+	encoder.Encode(rf.current_term)
+	encoder.Encode(rf.voted_for)
+	encoder.Encode(rf.log)
+	data := buffer.Bytes()
+	rf.persister.SaveRaftState(data)
+	rf.mu.Unlock()
 }
 
-//
-// restore previously persisted state.
-//
+/*
+ @brief Restore previously persisted state.
+*/
 func (rf *Raft) readPersist(data []byte) {
-	if data == nil || len(data) < 1 { // bootstrap without any state?
+	if data == nil || len(data) < 1 {
 		return
 	}
-	// Your code here (2C).
-	// Example:
-	// r := bytes.NewBuffer(data)
-	// d := labgob.NewDecoder(r)
-	// var xxx
-	// var yyy
-	// if d.Decode(&xxx) != nil ||
-	//    d.Decode(&yyy) != nil {
-	//   error...
-	// } else {
-	//   rf.xxx = xxx
-	//   rf.yyy = yyy
-	// }
+	buffer := bytes.NewBuffer(data)
+	decoder := labgob.NewDecoder(buffer)
+	var current_term_r int
+	var voted_for_r int
+	var log_r []LogEntry
+
+	rf.mu.Lock()
+	if decoder.Decode(&current_term_r) != nil ||
+		decoder.Decode(&voted_for_r) != nil ||
+		decoder.Decode(&log_r) != nil {
+		log.Printf("Server %v failed to recover from previously persisted state!", rf.me)
+	} else {
+		rf.current_term = current_term_r
+		rf.voted_for = voted_for_r
+		rf.log = log_r
+	}
+	rf.mu.Unlock()
 }
 
 //
