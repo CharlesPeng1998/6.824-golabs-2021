@@ -236,14 +236,14 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 			rf.voted_for = args.CandidateId
 			rf.recent_heartbeat = true
 			//Persist
-			rf.persist()
+			// rf.persist()
 			log.Printf("Follower %v votes for Candidate %v... (Current term: %v)", rf.me, args.CandidateId, rf.current_term)
 		} else if args.LastLogTerm != last_log_term && args.LastLogTerm > last_log_term {
 			reply.VoteGranted = true
 			rf.voted_for = args.CandidateId
 			rf.recent_heartbeat = true
 			//Persist
-			rf.persist()
+			// rf.persist()
 			log.Printf("Follower %v votes for Candidate %v... (Current term: %v)", rf.me, args.CandidateId, rf.current_term)
 		} else {
 			reply.VoteGranted = false
@@ -304,7 +304,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			reply.Success = true
 
 			// Persist
-			rf.persist()
+			// rf.persist()
 		} else {
 			// Get first conflict index
 			if rf.last_included_index+len(rf.log) < prev_log_index {
@@ -473,7 +473,7 @@ func (rf *Raft) updateTerm(new_term int) {
 	rf.voted_for = -1
 
 	// Persist
-	rf.persist()
+	// rf.persist()
 	rf.mu.Unlock()
 }
 
@@ -488,7 +488,7 @@ func (rf *Raft) appendEntryLocal(command interface{}) int {
 	rf.log = append(rf.log, log_entry)
 
 	// Persist
-	rf.persist()
+	// rf.persist()
 	rf.mu.Unlock()
 
 	return index
@@ -684,7 +684,7 @@ func (rf *Raft) candidateRoutine() {
 		rf.vote_count = 1
 		rf.voted_for = rf.me
 		//Persist
-		rf.persist()
+		// rf.persist()
 		// Reset election timeout
 		rand.Seed(time.Now().UnixNano())
 		rf.election_timeout = rand.Intn(election_timeout_up-election_timeout_lb) + election_timeout_lb

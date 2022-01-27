@@ -8,12 +8,15 @@ package raft
 // test with the original before submitting.
 //
 
-import "testing"
-import "fmt"
-import "time"
-import "math/rand"
-import "sync/atomic"
-import "sync"
+import (
+	"fmt"
+	"log"
+	"math/rand"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+)
 
 // The tester generously allows solutions to complete elections in one second
 // (much more than the paper's range of timeouts).
@@ -408,15 +411,20 @@ func TestBackup2B(t *testing.T) {
 
 	cfg.begin("Test (2B): leader backs up quickly over incorrect follower logs")
 
+	log.Printf("Test: First agreement...")
 	cfg.one(rand.Int(), servers, true)
+	log.Printf("Test: First agreement done...")
 
 	// put leader and one follower in a partition
 	leader1 := cfg.checkOneLeader()
 	cfg.disconnect((leader1 + 2) % servers)
 	cfg.disconnect((leader1 + 3) % servers)
 	cfg.disconnect((leader1 + 4) % servers)
+	log.Printf("Test: Followers %v, %v, %v are disconnected...",
+		(leader1+2)%servers, (leader1+2)%servers, (leader1+2)%servers)
 
 	// submit lots of commands that won't commit
+	log.Printf("Test: Submit 50 commands taht won't commit to leader %v...", leader1)
 	for i := 0; i < 50; i++ {
 		cfg.rafts[leader1].Start(rand.Int())
 	}
@@ -425,15 +433,21 @@ func TestBackup2B(t *testing.T) {
 
 	cfg.disconnect((leader1 + 0) % servers)
 	cfg.disconnect((leader1 + 1) % servers)
+	log.Printf("Test: Leader %v and Follower %v are disconnected...", leader1, (leader1+1)%servers)
 
 	// allow other partition to recover
 	cfg.connect((leader1 + 2) % servers)
 	cfg.connect((leader1 + 3) % servers)
 	cfg.connect((leader1 + 4) % servers)
+	log.Printf("Test: Followers %v, %v, %v are re-connected...",
+		(leader1+2)%servers, (leader1+2)%servers, (leader1+2)%servers)
 
 	// lots of successful commands to new group.
+	log.Printf("Test: About to try 50 agreements in new group...")
 	for i := 0; i < 50; i++ {
+		log.Printf("Test: About to try agreement %v...", i)
 		cfg.one(rand.Int(), 3, true)
+		log.Printf("Test: Agreement %v is done...", i)
 	}
 
 	// now another partitioned leader and one follower
@@ -443,8 +457,10 @@ func TestBackup2B(t *testing.T) {
 		other = (leader2 + 1) % servers
 	}
 	cfg.disconnect(other)
+	log.Printf("Test: Follower %v is disconnected...", other)
 
 	// lots more commands that won't commit
+	log.Printf("Test: Submit 50 commands taht won't commit to leader %v...", leader2)
 	for i := 0; i < 50; i++ {
 		cfg.rafts[leader2].Start(rand.Int())
 	}
@@ -458,17 +474,26 @@ func TestBackup2B(t *testing.T) {
 	cfg.connect((leader1 + 0) % servers)
 	cfg.connect((leader1 + 1) % servers)
 	cfg.connect(other)
+	log.Printf("Test: Servers %v, %v, %v are re-connected. Others are disconnected...",
+		(leader1+0)%servers, (leader1+1)%servers, other)
 
 	// lots of successful commands to new group.
+	log.Printf("Test: About to try 50 agreements in new group...")
 	for i := 0; i < 50; i++ {
+		log.Printf("Test: About to try agreement %v...", i)
 		cfg.one(rand.Int(), 3, true)
+		log.Printf("Test: Agreement %v is done...", i)
 	}
 
 	// now everyone
 	for i := 0; i < servers; i++ {
 		cfg.connect(i)
 	}
+	log.Printf("Test: Everyone is connected now...")
+
+	log.Printf("Test: Last agreement...")
 	cfg.one(rand.Int(), servers, true)
+	log.Printf("Test: Last agreement is done...")
 
 	cfg.end()
 }
