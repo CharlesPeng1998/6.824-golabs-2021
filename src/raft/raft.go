@@ -364,10 +364,9 @@ func (rf *Raft) sendRequestVote(server int) {
 /*
  @brief: Send a hearbeat (empty AppendEntries RPC) to a server
 */
-func (rf *Raft) sendHeartBeat(server int) {
+func (rf *Raft) sendHeartBeat(server int, current_term int) {
 	rf.mu.Lock()
 	id := rf.me
-	current_term := rf.current_term
 	leader_commit := rf.commit_index
 
 	prev_log_index := rf.next_index[server] - 1
@@ -402,10 +401,9 @@ func (rf *Raft) sendHeartBeat(server int) {
 /*
  @brief: Send log entries to a server
 */
-func (rf *Raft) sendLogEntries(server int) {
+func (rf *Raft) sendLogEntries(server int, current_term int) {
 	rf.mu.Lock()
 	id := rf.me
-	current_term := rf.current_term
 	prev_log_index := rf.next_index[server] - 1
 	var prev_log_term int
 	if prev_log_index <= rf.last_included_index {
@@ -416,7 +414,8 @@ func (rf *Raft) sendLogEntries(server int) {
 	}
 	leader_commit := rf.commit_index
 	start_offset := rf.next_index[server] - rf.last_included_index - 1
-	entries := rf.log[start_offset:len(rf.log)]
+	var entries []LogEntry
+	entries = append(entries, rf.log[start_offset:len(rf.log)]...)
 	rf.mu.Unlock()
 
 	log.Printf("Leader %v is sending log entries (Index starting from %v) to server %v... (Current term: %v)", id, prev_log_index+1, server, current_term)
@@ -556,7 +555,7 @@ func (rf *Raft) leaderRoutine(applyCh chan ApplyMsg) {
 	// Leader sending heartbeat
 	for i := 0; i < num_server; i++ {
 		if i != me {
-			go rf.sendHeartBeat(i)
+			go rf.sendHeartBeat(i, current_term)
 		}
 	}
 
@@ -570,7 +569,7 @@ func (rf *Raft) leaderRoutine(applyCh chan ApplyMsg) {
 
 			if last_log_index >= next_index {
 				log.Printf("Debug: lastLogIndex = %v, nextIndex of server %v = %v", last_log_index, i, next_index)
-				go rf.sendLogEntries(i)
+				go rf.sendLogEntries(i, current_term)
 			}
 		}
 	}
