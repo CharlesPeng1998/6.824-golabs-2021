@@ -421,11 +421,11 @@ func TestBackup2B(t *testing.T) {
 	cfg.disconnect((leader1 + 3) % servers)
 	cfg.disconnect((leader1 + 4) % servers)
 	log.Printf("Test: Followers %v, %v, %v are disconnected...",
-		(leader1+2)%servers, (leader1+2)%servers, (leader1+2)%servers)
+		(leader1+2)%servers, (leader1+3)%servers, (leader1+4)%servers)
 
 	// submit lots of commands that won't commit
-	log.Printf("Test: Submit 50 commands taht won't commit to leader %v...", leader1)
-	for i := 0; i < 50; i++ {
+	log.Printf("Test: Submit 10 commands taht won't commit to leader %v...", leader1)
+	for i := 0; i < 10; i++ {
 		cfg.rafts[leader1].Start(rand.Int())
 	}
 
@@ -440,11 +440,11 @@ func TestBackup2B(t *testing.T) {
 	cfg.connect((leader1 + 3) % servers)
 	cfg.connect((leader1 + 4) % servers)
 	log.Printf("Test: Followers %v, %v, %v are re-connected...",
-		(leader1+2)%servers, (leader1+2)%servers, (leader1+2)%servers)
+		(leader1+2)%servers, (leader1+3)%servers, (leader1+4)%servers)
 
 	// lots of successful commands to new group.
-	log.Printf("Test: About to try 50 agreements in new group...")
-	for i := 0; i < 50; i++ {
+	log.Printf("Test: About to try 10 agreements in new group...")
+	for i := 0; i < 10; i++ {
 		log.Printf("Test: About to try agreement %v...", i)
 		cfg.one(rand.Int(), 3, true)
 		log.Printf("Test: Agreement %v is done...", i)
@@ -460,8 +460,8 @@ func TestBackup2B(t *testing.T) {
 	log.Printf("Test: Follower %v is disconnected...", other)
 
 	// lots more commands that won't commit
-	log.Printf("Test: Submit 50 commands taht won't commit to leader %v...", leader2)
-	for i := 0; i < 50; i++ {
+	log.Printf("Test: Submit 10 commands taht won't commit to leader %v...", leader2)
+	for i := 0; i < 10; i++ {
 		cfg.rafts[leader2].Start(rand.Int())
 	}
 
@@ -478,8 +478,8 @@ func TestBackup2B(t *testing.T) {
 		(leader1+0)%servers, (leader1+1)%servers, other)
 
 	// lots of successful commands to new group.
-	log.Printf("Test: About to try 50 agreements in new group...")
-	for i := 0; i < 50; i++ {
+	log.Printf("Test: About to try 10 agreements in new group...")
+	for i := 0; i < 10; i++ {
 		log.Printf("Test: About to try agreement %v...", i)
 		cfg.one(rand.Int(), 3, true)
 		log.Printf("Test: Agreement %v is done...", i)

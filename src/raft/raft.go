@@ -429,7 +429,8 @@ func (rf *Raft) sendLogEntries(server int) {
 	}
 	leader_commit := rf.commit_index
 	start_offset := rf.next_index[server] - rf.last_included_index - 1
-	entries := rf.log[start_offset:len(rf.log)]
+	var entries []LogEntry
+	entries = append(entries, rf.log[start_offset:len(rf.log)]...)
 	rf.mu.Unlock()
 
 	log.Printf("Leader %v is sending log entries (Index starting from %v) to server %v... (Current term: %v)", id, prev_log_index+1, server, current_term)
