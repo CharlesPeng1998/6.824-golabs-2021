@@ -18,25 +18,26 @@ package raft
 //
 
 import (
-	//	"bytes"
-
+	"bytes"
+	"fmt"
 	"log"
 	"math/rand"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	//	"6.824/labgob"
+	"6.824/labgob"
 	"6.824/labrpc"
 )
 
-// func init() {
-// 	log_file, err := os.OpenFile("raft.log", os.O_WRONLY|os.O_CREATE, 0666)
-// 	if err != nil {
-// 		fmt.Println("Fail to open log file!", err)
-// 	}
-// 	log.SetOutput(log_file)
-// }
+func init() {
+	log_file, err := os.OpenFile("raft.log", os.O_WRONLY|os.O_CREATE, 0666)
+	if err != nil {
+		fmt.Println("Fail to open log file!", err)
+	}
+	log.SetOutput(log_file)
+}
 
 //
 // as each Raft peer becomes aware that successive log entries are
@@ -97,8 +98,10 @@ type LogEntry struct {
 	Command interface{}
 }
 
-// return currentTerm and whether this server
-// believes it is the leader.
+/*
+ @brief Return currentTerm and whether this server
+        believes it is the leader.
+*/
 func (rf *Raft) GetState() (int, bool) {
 	var term int = -1
 	var isleader bool
@@ -111,42 +114,47 @@ func (rf *Raft) GetState() (int, bool) {
 	return term, isleader
 }
 
-//
-// save Raft's persistent state to stable storage,
-// where it can later be retrieved after a crash and restart.
-// see paper's Figure 2 for a description of what should be persistent.
-//
+/*
+ @brief Save Raft's persistent state to stable storage,
+        where it can later be retrieved after a crash and restart.
+ @Note Thread unsafe, need outside lock,
+*/
 func (rf *Raft) persist() {
-	// Your code here (2C).
-	// Example:
-	// w := new(bytes.Buffer)
-	// e := labgob.NewEncoder(w)
-	// e.Encode(rf.xxx)
-	// e.Encode(rf.yyy)
-	// data := w.Bytes()
-	// rf.persister.SaveRaftState(data)
+	buffer := new(bytes.Buffer)
+	encoder := labgob.NewEncoder(buffer)
+
+	encoder.Encode(rf.current_term)
+	encoder.Encode(rf.voted_for)
+	encoder.Encode(rf.log)
+	data := buffer.Bytes()
+	rf.persister.SaveRaftState(data)
 }
 
-//
-// restore previously persisted state.
-//
+/*
+ @brief Restore previously persisted state.
+*/
 func (rf *Raft) readPersist(data []byte) {
-	if data == nil || len(data) < 1 { // bootstrap without any state?
+	if data == nil || len(data) < 1 {
 		return
 	}
-	// Your code here (2C).
-	// Example:
-	// r := bytes.NewBuffer(data)
-	// d := labgob.NewDecoder(r)
-	// var xxx
-	// var yyy
-	// if d.Decode(&xxx) != nil ||
-	//    d.Decode(&yyy) != nil {
-	//   error...
-	// } else {
-	//   rf.xxx = xxx
-	//   rf.yyy = yyy
-	// }
+	buffer := bytes.NewBuffer(data)
+	decoder := labgob.NewDecoder(buffer)
+	var current_term_r int
+	var voted_for_r int
+	var log_r []LogEntry
+
+	rf.mu.Lock()
+	if decoder.Decode(&current_term_r) != nil ||
+		decoder.Decode(&voted_for_r) != nil ||
+		decoder.Decode(&log_r) != nil {
+		log.Printf("Server %v failed to recover from previously persisted state!", rf.me)
+	} else {
+		rf.current_term = current_term_r
+		rf.voted_for = voted_for_r
+		rf.log = log_r
+		log.Printf("Server %v recoverd from persisted state: Current term %v, Voted for %v...", rf.me, rf.current_term, rf.voted_for)
+	}
+	rf.mu.Unlock()
 }
 
 //
@@ -229,11 +237,15 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 			reply.VoteGranted = true
 			rf.voted_for = args.CandidateId
 			rf.recent_heartbeat = true
+			// Persist
+			rf.persist()
 			log.Printf("Follower %v votes for Candidate %v... (Current term: %v)", rf.me, args.CandidateId, rf.current_term)
 		} else if args.LastLogTerm != last_log_term && args.LastLogTerm > last_log_term {
 			reply.VoteGranted = true
 			rf.voted_for = args.CandidateId
 			rf.recent_heartbeat = true
+			//Persist
+			rf.persist()
 			log.Printf("Follower %v votes for Candidate %v... (Current term: %v)", rf.me, args.CandidateId, rf.current_term)
 		} else {
 			reply.VoteGranted = false
@@ -292,10 +304,13 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		if consistent {
 			rf.log = append(rf.log[0:prev_log_index-rf.last_included_index], args.Entries...)
 			reply.Success = true
+
+			// Persist
+			rf.persist()
 		} else {
 			// Get first conflict index
 			if rf.last_included_index+len(rf.log) < prev_log_index {
-				reply.FirstConflictIndex = rf.last_included_index + len(rf.log)
+				reply.FirstConflictIndex = rf.last_included_index + len(rf.log) + 1
 			} else if rf.log[prev_log_index-rf.last_included_index-1].Term != prev_log_term {
 				conflict_term := rf.log[prev_log_index-rf.last_included_index-1].Term
 				for reply.FirstConflictIndex = prev_log_index; ; {
@@ -457,6 +472,9 @@ func (rf *Raft) updateTerm(new_term int) {
 	rf.current_term = new_term
 	rf.state = 0
 	rf.voted_for = -1
+
+	// Persist
+	rf.persist()
 	rf.mu.Unlock()
 }
 
@@ -469,7 +487,11 @@ func (rf *Raft) appendEntryLocal(command interface{}) int {
 	index := rf.last_included_index + len(rf.log) + 1
 	log_entry := LogEntry{Index: index, Term: rf.current_term, Command: command}
 	rf.log = append(rf.log, log_entry)
+
+	// Persist
+	rf.persist()
 	rf.mu.Unlock()
+
 	return index
 }
 
@@ -662,6 +684,8 @@ func (rf *Raft) candidateRoutine() {
 		// Vote for self
 		rf.vote_count = 1
 		rf.voted_for = rf.me
+		//Persist
+		rf.persist()
 		// Reset election timeout
 		rand.Seed(time.Now().UnixNano())
 		rf.election_timeout = rand.Intn(election_timeout_up-election_timeout_lb) + election_timeout_lb
@@ -731,7 +755,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
-	// start ticker goroutine to start elections
+	// start ticker goroutine to run this server
 	go rf.ticker(applyCh)
 
 	return rf
