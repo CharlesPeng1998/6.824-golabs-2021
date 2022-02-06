@@ -19,10 +19,8 @@ package raft
 
 import (
 	"bytes"
-	"fmt"
 	"log"
 	"math/rand"
-	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -31,13 +29,13 @@ import (
 	"6.824/labrpc"
 )
 
-func init() {
-	log_file, err := os.OpenFile("raft.log", os.O_WRONLY|os.O_CREATE, 0666)
-	if err != nil {
-		fmt.Println("Fail to open log file!", err)
-	}
-	log.SetOutput(log_file)
-}
+// func init() {
+// 	log_file, err := os.OpenFile("raft.log", os.O_WRONLY|os.O_CREATE, 0666)
+// 	if err != nil {
+// 		fmt.Println("Fail to open log file!", err)
+// 	}
+// 	log.SetOutput(log_file)
+// }
 
 //
 // as each Raft peer becomes aware that successive log entries are
@@ -305,12 +303,16 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			rf.log = append(rf.log[0:prev_log_index-rf.last_included_index], args.Entries...)
 			reply.Success = true
 
+			// for debug
+			rf.printLogInfo()
+
 			// Persist
 			rf.persist()
 		} else {
 			// Get first conflict index
 			if rf.last_included_index+len(rf.log) < prev_log_index {
 				reply.FirstConflictIndex = rf.last_included_index + len(rf.log) + 1
+				log.Printf("Server %v has no entry at prevLogIndex -> FirstConflictIndex = %v... (Current term: %v)", rf.me, reply.FirstConflictIndex, rf.current_term)
 			} else if rf.log[prev_log_index-rf.last_included_index-1].Term != prev_log_term {
 				conflict_term := rf.log[prev_log_index-rf.last_included_index-1].Term
 				for reply.FirstConflictIndex = prev_log_index; ; {
@@ -320,6 +322,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 						break
 					}
 				}
+				log.Printf("Server %v has conflict term at prevLogIndex -> FirstConflictIndex = %v... (Current term: %v)", rf.me, reply.FirstConflictIndex, rf.current_term)
 			}
 
 			reply.Success = false
@@ -334,7 +337,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		} else {
 			rf.commit_index = prev_log_index + len(args.Entries)
 		}
-		log.Printf("Follower %v's commitIndex is updated from %v to %v!", rf.me, old_commit_index, rf.commit_index)
+		log.Printf("Follower %v's commitIndex is updated from %v to %v... (Current term: %v)", rf.me, old_commit_index, rf.commit_index, rf.current_term)
 	}
 	rf.mu.Unlock()
 }
@@ -419,6 +422,7 @@ func (rf *Raft) sendHeartBeat(server int, current_term int) {
 func (rf *Raft) sendLogEntries(server int, current_term int) {
 	rf.mu.Lock()
 	id := rf.me
+	log_len := len(rf.log)
 	prev_log_index := rf.next_index[server] - 1
 	var prev_log_term int
 	if prev_log_index <= rf.last_included_index {
@@ -431,6 +435,7 @@ func (rf *Raft) sendLogEntries(server int, current_term int) {
 	start_offset := rf.next_index[server] - rf.last_included_index - 1
 	var entries []LogEntry
 	entries = append(entries, rf.log[start_offset:len(rf.log)]...)
+	// log.Printf("Debug: start_offset = %v, nextIndex[%v] = %v... (Current term: %v)", start_offset, server, rf.next_index[server], rf.current_term)
 	rf.mu.Unlock()
 
 	log.Printf("Leader %v is sending log entries (Index starting from %v) to server %v... (Current term: %v)", id, prev_log_index+1, server, current_term)
@@ -448,12 +453,13 @@ func (rf *Raft) sendLogEntries(server int, current_term int) {
 		} else if reply.Success == false { // Inconsistency -> Update nextIndex
 			rf.mu.Lock()
 			rf.next_index[server] = reply.FirstConflictIndex
+			// log.Printf("Debug: nextIndex[%v] is set to %v... (Current term: %v)", server, rf.next_index[server], rf.current_term)
 			rf.mu.Unlock()
 			log.Printf("Leader %v's log is inconsistent with server %v! First conflict index is %v... (Current term: %v)", id, server, reply.FirstConflictIndex, current_term)
 		} else { // Success
 			rf.mu.Lock()
-			rf.next_index[server] = len(rf.log) + 1
-			rf.match_index[server] = rf.last_included_index + len(rf.log)
+			rf.next_index[server] = rf.last_included_index + log_len + 1
+			rf.match_index[server] = rf.last_included_index + log_len
 			rf.mu.Unlock()
 			log.Printf("Leader %v succeeded to append log entries to server %v! (Current term: %v)", id, server, current_term)
 		}
@@ -488,6 +494,9 @@ func (rf *Raft) appendEntryLocal(command interface{}) int {
 	log_entry := LogEntry{Index: index, Term: rf.current_term, Command: command}
 	rf.log = append(rf.log, log_entry)
 
+	// For debug
+	rf.printLogInfo()
+
 	// Persist
 	rf.persist()
 	rf.mu.Unlock()
@@ -515,6 +524,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 	if isLeader {
 		index = rf.appendEntryLocal(command)
+		log.Printf("Command %v has been appended in leader %v... (Current term: %v)", command, rf.me, term)
 	}
 
 	return index, term, isLeader
@@ -590,7 +600,7 @@ func (rf *Raft) leaderRoutine(applyCh chan ApplyMsg) {
 			rf.mu.Unlock()
 
 			if last_log_index >= next_index {
-				log.Printf("Debug: lastLogIndex = %v, nextIndex of server %v = %v", last_log_index, i, next_index)
+				// log.Printf("Debug: lastLogIndex = %v, nextIndex of server %v = %v", last_log_index, i, next_index)
 				go rf.sendLogEntries(i, current_term)
 			}
 		}
@@ -612,7 +622,9 @@ func (rf *Raft) leaderRoutine(applyCh chan ApplyMsg) {
 			}
 		}
 		if cnt > len(rf.peers)/2 {
+			old_commit_index := rf.commit_index
 			rf.commit_index = index
+			log.Printf("Leader %v's commitIndex is updated from %v to %v... (Current term: %v)", rf.me, old_commit_index, rf.commit_index, current_term)
 		} else {
 			break
 		}
@@ -625,7 +637,7 @@ func (rf *Raft) leaderRoutine(applyCh chan ApplyMsg) {
 		select {
 		case applyCh <- apply_msg:
 			rf.last_applied = index
-			log.Printf("Command %v has been applied in server %v!", index, rf.me)
+			log.Printf("Command %v has been applied in leader %v!", index, rf.me)
 		case <-time.After(10 * time.Millisecond):
 			log.Printf("Fail to apply command %v in 10 ms in server %v!", index, rf.me)
 		}
@@ -724,6 +736,16 @@ func (rf *Raft) candidateRoutine() {
 		}
 		rf.mu.Unlock()
 	}
+}
+
+/*
+	For debug
+*/
+func (rf *Raft) printLogInfo() {
+	log.Printf("LogInfo of server %v:", rf.me)
+	log.Printf("Current log: %v", rf.log)
+	log.Printf("Current commitIndex = %v", rf.commit_index)
+	log.Printf("Current lastApplied = %v", rf.last_applied)
 }
 
 //
