@@ -19,8 +19,10 @@ package raft
 
 import (
 	"bytes"
+	"fmt"
 	"log"
 	"math/rand"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -29,13 +31,13 @@ import (
 	"6.824/labrpc"
 )
 
-// func init() {
-// 	log_file, err := os.OpenFile("raft.log", os.O_WRONLY|os.O_CREATE, 0666)
-// 	if err != nil {
-// 		fmt.Println("Fail to open log file!", err)
-// 	}
-// 	log.SetOutput(log_file)
-// }
+func init() {
+	log_file, err := os.OpenFile("raft.log", os.O_WRONLY|os.O_CREATE, 0666)
+	if err != nil {
+		fmt.Println("Fail to open log file!", err)
+	}
+	log.SetOutput(log_file)
+}
 
 //
 // as each Raft peer becomes aware that successive log entries are
@@ -363,20 +365,29 @@ func (rf *Raft) sendRequestVote(server int) {
 	reply := RequestVoteReply{}
 	ok := rf.peers[server].Call("Raft.RequestVote", &args, &reply)
 
+	rf.mu.Lock()
 	if ok {
 		server_term := reply.CurrentTerm
 		vote_granted := reply.VoteGranted
-		if server_term > current_term { // Candidate out of date
-			log.Printf("Candidate %v's term %v is out of date (newer term %v), reverting to follower...", candidate_id, current_term, server_term)
-			rf.updateTerm(server_term)
-		} else if vote_granted {
-			rf.mu.Lock()
+		if server_term > rf.current_term { // Candidate out of date
+			log.Printf("Candidate %v's term %v is out of date (newer term %v), reverting to follower...", candidate_id, rf.current_term, server_term)
+			rf.updateTermNoLock(server_term)
+		} else if server_term == rf.current_term && vote_granted {
 			rf.vote_count += 1
-			rf.mu.Unlock()
 		}
 	} else {
 		log.Printf("Candidate %v fails to send vote request to server %v! (Current term: %v)", candidate_id, server, current_term)
 	}
+	rf.mu.Unlock()
+}
+
+func (rf *Raft) updateTermNoLock(new_term int) {
+	rf.current_term = new_term
+	rf.state = 0
+	rf.voted_for = -1
+
+	// Persist
+	rf.persist()
 }
 
 /*
@@ -640,6 +651,7 @@ func (rf *Raft) leaderRoutine(applyCh chan ApplyMsg) {
 			log.Printf("Command %v has been applied in leader %v!", index, rf.me)
 		case <-time.After(10 * time.Millisecond):
 			log.Printf("Fail to apply command %v in 10 ms in server %v!", index, rf.me)
+			break
 		}
 	}
 	rf.mu.Unlock()
@@ -679,6 +691,7 @@ func (rf *Raft) followerRoutine(applyCh chan ApplyMsg) {
 			log.Printf("Command %v has been applied in server %v!", index, rf.me)
 		case <-time.After(10 * time.Millisecond):
 			log.Printf("Fail to apply command %v in 10 ms in server %v!", index, rf.me)
+			break
 		}
 	}
 	rf.mu.Unlock()
