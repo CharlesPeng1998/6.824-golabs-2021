@@ -217,13 +217,10 @@ type AppendEntriesReply struct {
 //
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.mu.Lock()
-	current_term := rf.current_term
-	rf.mu.Unlock()
-	if args.CurrentTerm > current_term {
+	if args.CurrentTerm > rf.current_term {
 		rf.updateTerm(args.CurrentTerm)
 	}
 
-	rf.mu.Lock()
 	if rf.current_term == args.CurrentTerm && rf.state == 0 && (rf.voted_for == -1 || rf.voted_for == args.CandidateId) {
 		// Election restriction
 		var last_log_index, last_log_term int
@@ -262,25 +259,22 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 //
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
-	current_term := rf.current_term
-	current_state := rf.state
+	defer rf.mu.Unlock()
 	rf.recent_heartbeat = true
-	rf.mu.Unlock()
 
 	// Update current term if seeing larger term
-	if args.CurrentTerm > current_term {
+	if args.CurrentTerm > rf.current_term {
 		rf.updateTerm(args.CurrentTerm)
 		reply.CurrentTerm = args.CurrentTerm
-	} else if args.CurrentTerm == current_term {
-		reply.CurrentTerm = current_term
-	} else if args.CurrentTerm < current_term { // Leader is out-dated -> Return false
-		reply.CurrentTerm = current_term
+	} else if args.CurrentTerm == rf.current_term {
+		reply.CurrentTerm = rf.current_term
+	} else if args.CurrentTerm < rf.current_term { // Leader is out-dated -> Return false
+		reply.CurrentTerm = rf.current_term
 		reply.Success = false
 		return
 	}
 
 	// Consistency check
-	rf.mu.Lock()
 	var consistent bool
 	prev_log_index := args.PrevLogIndex
 	prev_log_term := args.PrevLogTerm
@@ -297,7 +291,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	// Handling heartbeat or appending entries
 	if len(args.Entries) == 0 { // Heartbeat
-		if current_state == 1 {
+		if rf.state == 1 {
 			rf.state = 0
 		}
 	} else { // Append entries
@@ -341,7 +335,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		}
 		log.Printf("Follower %v's commitIndex is updated from %v to %v... (Current term: %v)", rf.me, old_commit_index, rf.commit_index, rf.current_term)
 	}
-	rf.mu.Unlock()
 }
 
 /*
@@ -371,7 +364,7 @@ func (rf *Raft) sendRequestVote(server int) {
 		vote_granted := reply.VoteGranted
 		if server_term > rf.current_term { // Candidate out of date
 			log.Printf("Candidate %v's term %v is out of date (newer term %v), reverting to follower...", candidate_id, rf.current_term, server_term)
-			rf.updateTermNoLock(server_term)
+			rf.updateTerm(server_term)
 		} else if server_term == rf.current_term && vote_granted {
 			rf.vote_count += 1
 		}
@@ -379,15 +372,6 @@ func (rf *Raft) sendRequestVote(server int) {
 		log.Printf("Candidate %v fails to send vote request to server %v! (Current term: %v)", candidate_id, server, current_term)
 	}
 	rf.mu.Unlock()
-}
-
-func (rf *Raft) updateTermNoLock(new_term int) {
-	rf.current_term = new_term
-	rf.state = 0
-	rf.voted_for = -1
-
-	// Persist
-	rf.persist()
 }
 
 /*
@@ -406,7 +390,6 @@ func (rf *Raft) sendHeartBeat(server int, current_term int) {
 		log_offset := prev_log_index - rf.last_included_index - 1
 		prev_log_term = rf.log[log_offset].Term
 	}
-
 	rf.mu.Unlock()
 
 	log.Printf("Leader %v is sending heartbeat to server %v... (Current term: %v)", id, server, current_term)
@@ -417,14 +400,16 @@ func (rf *Raft) sendHeartBeat(server int, current_term int) {
 
 	ok := rf.peers[server].Call("Raft.AppendEntries", &args, &reply)
 
+	rf.mu.Lock()
 	if ok {
-		if reply.CurrentTerm > current_term { // This leader is out-dated
-			log.Printf("Leader %v's term %v is out of date (newer term %v), reverting to follower...", id, current_term, reply.CurrentTerm)
+		if reply.CurrentTerm > rf.current_term { // This leader is out-dated
+			log.Printf("Leader %v's term %v is out of date (newer term %v), reverting to follower...", id, rf.current_term, reply.CurrentTerm)
 			rf.updateTerm(reply.CurrentTerm)
 		}
 	} else {
 		log.Printf("Leader %v fails to send heartbeat to server %v! (Current term: %v)", id, server, current_term)
 	}
+	rf.mu.Unlock()
 }
 
 /*
@@ -457,26 +442,23 @@ func (rf *Raft) sendLogEntries(server int, current_term int) {
 
 	ok := rf.peers[server].Call("Raft.AppendEntries", &args, &reply)
 
+	rf.mu.Lock()
 	if ok {
-		if reply.CurrentTerm > current_term { // This leader is out-dated
-			log.Printf("Leader %v's term %v is out of date (newer term %v), reverting to follower...", id, current_term, reply.CurrentTerm)
+		if reply.CurrentTerm > rf.current_term { // This leader is out-dated
+			log.Printf("Leader %v's term %v is out of date (newer term %v), reverting to follower...", id, rf.current_term, reply.CurrentTerm)
 			rf.updateTerm(reply.CurrentTerm)
 		} else if reply.Success == false { // Inconsistency -> Update nextIndex
-			rf.mu.Lock()
 			rf.next_index[server] = reply.FirstConflictIndex
-			// log.Printf("Debug: nextIndex[%v] is set to %v... (Current term: %v)", server, rf.next_index[server], rf.current_term)
-			rf.mu.Unlock()
 			log.Printf("Leader %v's log is inconsistent with server %v! First conflict index is %v... (Current term: %v)", id, server, reply.FirstConflictIndex, current_term)
 		} else { // Success
-			rf.mu.Lock()
 			rf.next_index[server] = rf.last_included_index + log_len + 1
 			rf.match_index[server] = rf.last_included_index + log_len
-			rf.mu.Unlock()
 			log.Printf("Leader %v succeeded to append log entries to server %v! (Current term: %v)", id, server, current_term)
 		}
 	} else {
 		log.Printf("Leader %v fails to send AppendEntries RPC to server %v! (Current term: %v)", id, server, current_term)
 	}
+	rf.mu.Unlock()
 }
 
 //
@@ -485,14 +467,12 @@ func (rf *Raft) sendLogEntries(server int, current_term int) {
 // voted_for will be set to -1
 //
 func (rf *Raft) updateTerm(new_term int) {
-	rf.mu.Lock()
 	rf.current_term = new_term
 	rf.state = 0
 	rf.voted_for = -1
 
 	// Persist
 	rf.persist()
-	rf.mu.Unlock()
 }
 
 /*
