@@ -69,11 +69,12 @@ const election_timeout_up int = 500
 // A Go object implementing a single Raft peer.
 //
 type Raft struct {
-	mu        sync.Mutex          // Lock to protect shared access to this peer's state
-	peers     []*labrpc.ClientEnd // RPC end points of all peers
-	persister *Persister          // Object to hold this peer's persisted state
-	me        int                 // this peer's index into peers[]
-	dead      int32               // set by Kill()
+	mu                sync.Mutex          // Lock to protect shared access to this peer's state
+	peers             []*labrpc.ClientEnd // RPC end points of all peers
+	persister         *Persister          // Object to hold this peer's persisted state
+	me                int                 // this peer's index into peers[]
+	dead              int32               // set by Kill()
+	heartbeat_channel chan int
 
 	// These three states will be persistent
 	current_term int
@@ -233,14 +234,20 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		if args.LastLogTerm == last_log_term && args.LastLogIndex >= last_log_index {
 			reply.VoteGranted = true
 			rf.voted_for = args.CandidateId
-			rf.recent_heartbeat = true
+			select {
+			case rf.heartbeat_channel <- 1:
+			default:
+			}
 			// Persist
 			rf.persist()
 			log.Printf("Follower %v votes for Candidate %v... (Current term: %v)", rf.me, args.CandidateId, rf.current_term)
 		} else if args.LastLogTerm != last_log_term && args.LastLogTerm > last_log_term {
 			reply.VoteGranted = true
 			rf.voted_for = args.CandidateId
-			rf.recent_heartbeat = true
+			select {
+			case rf.heartbeat_channel <- 1:
+			default:
+			}
 			//Persist
 			rf.persist()
 			log.Printf("Follower %v votes for Candidate %v... (Current term: %v)", rf.me, args.CandidateId, rf.current_term)
@@ -260,7 +267,6 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	rf.recent_heartbeat = true
 
 	// Update current term if seeing larger term
 	if args.CurrentTerm > rf.current_term {
@@ -272,6 +278,11 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply.CurrentTerm = rf.current_term
 		reply.Success = false
 		return
+	}
+
+	select {
+	case rf.heartbeat_channel <- 1:
+	default:
 	}
 
 	// Consistency check
@@ -646,22 +657,23 @@ func (rf *Raft) followerRoutine(applyCh chan ApplyMsg) {
 	election_timeout := rf.election_timeout
 	rf.mu.Unlock()
 
-	// Sleep for an election timeout
-	time.Sleep(time.Duration(election_timeout) * time.Millisecond)
-
-	rf.mu.Lock()
-	// TODO: Use select to detect heartbeat?
-	if rf.recent_heartbeat {
+	select {
+	case <-rf.heartbeat_channel:
 		// Re-randomize election timeout
+		rf.mu.Lock()
 		rand.Seed(time.Now().UnixNano())
 		rf.election_timeout = rand.Intn(election_timeout_up-election_timeout_lb) + election_timeout_lb
-	} else {
+		rf.mu.Unlock()
+	case <-time.After(time.Duration(election_timeout) * time.Millisecond):
+		// Timeout: Convert to Candidate
+		rf.mu.Lock()
 		log.Printf("Follower %v fails to receive recent heartbeat, converting to Candidate... (Current term: %v)", rf.me, rf.current_term)
-		// Convert to Candidate
 		rf.state = 1
+		rf.mu.Unlock()
 	}
 
 	// Apply those applied command
+	rf.mu.Lock()
 	for index := rf.last_applied + 1; index <= rf.commit_index; index++ {
 		log_offset := index - rf.last_included_index - 1
 		apply_msg := ApplyMsg{CommandValid: true, Command: rf.log[log_offset].Command, CommandIndex: index}
@@ -758,6 +770,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.peers = peers
 	rf.persister = persister
 	rf.me = me
+	rf.heartbeat_channel = make(chan int, 1)
 	rf.current_term = 0
 	rf.state = 0
 	rf.commit_index = 0
