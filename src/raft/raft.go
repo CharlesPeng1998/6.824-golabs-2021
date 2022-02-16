@@ -77,20 +77,20 @@ type Raft struct {
 	heartbeat_channel chan int
 
 	// These three states will be persistent
-	current_term int
-	voted_for    int
-	log          []LogEntry
-
-	state               int // 0 for follower, 1 for candidate, 2 for leader
+	current_term        int
+	voted_for           int
+	log                 []LogEntry
 	last_included_index int // Snapshot info
 	last_included_term  int // Snapshot info
-	election_timeout    int
-	recent_heartbeat    bool
-	vote_count          int
-	commit_index        int
-	last_applied        int
-	next_index          []int
-	match_index         []int
+
+	state            int // 0 for follower, 1 for candidate, 2 for leader
+	election_timeout int
+	recent_heartbeat bool
+	vote_count       int
+	commit_index     int
+	last_applied     int
+	next_index       []int
+	match_index      []int
 }
 
 type LogEntry struct {
@@ -127,6 +127,8 @@ func (rf *Raft) persist() {
 	encoder.Encode(rf.current_term)
 	encoder.Encode(rf.voted_for)
 	encoder.Encode(rf.log)
+	encoder.Encode(rf.last_included_index)
+	encoder.Encode(rf.last_included_term)
 	data := buffer.Bytes()
 	rf.persister.SaveRaftState(data)
 }
@@ -143,16 +145,22 @@ func (rf *Raft) readPersist(data []byte) {
 	var current_term_r int
 	var voted_for_r int
 	var log_r []LogEntry
+	var last_included_index int
+	var last_included_term int
 
 	rf.mu.Lock()
 	if decoder.Decode(&current_term_r) != nil ||
 		decoder.Decode(&voted_for_r) != nil ||
-		decoder.Decode(&log_r) != nil {
-		log.Printf("Server %v failed to recover from previously persisted state!", rf.me)
+		decoder.Decode(&log_r) != nil ||
+		decoder.Decode(&last_included_index) != nil ||
+		decoder.Decode(&last_included_term) {
+		log.Fatalf("Server %v failed to recover from previously persisted state!", rf.me)
 	} else {
 		rf.current_term = current_term_r
 		rf.voted_for = voted_for_r
 		rf.log = log_r
+		rf.last_included_index = last_included_index
+		rf.last_included_term = last_included_term
 		log.Printf("Server %v recoverd from persisted state: Current term %v, Voted for %v...", rf.me, rf.current_term, rf.voted_for)
 	}
 	rf.mu.Unlock()
@@ -174,8 +182,28 @@ func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludedIndex int,
 // service no longer needs the log through (and including)
 // that index. Raft should now trim its log as much as possible.
 func (rf *Raft) Snapshot(index int, snapshot []byte) {
-	// Your code here (2D).
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 
+	// Trim the log
+	new_log := []LogEntry{}
+	new_log = append(new_log, rf.log[0:index-rf.last_included_index]...)
+	rf.last_included_term = rf.log[index-rf.last_included_index-1].Term
+	rf.last_included_index = index
+	rf.log = new_log
+
+	// Raft state
+	buffer := new(bytes.Buffer)
+	encoder := labgob.NewEncoder(buffer)
+	encoder.Encode(rf.current_term)
+	encoder.Encode(rf.voted_for)
+	encoder.Encode(rf.log)
+	encoder.Encode(rf.last_included_index)
+	encoder.Encode(rf.last_included_term)
+	state_data := buffer.Bytes()
+
+	// Persist Raft state and snapshot
+	rf.persister.SaveStateAndSnapshot(state_data, snapshot)
 }
 
 //
