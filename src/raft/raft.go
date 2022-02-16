@@ -569,6 +569,34 @@ func (rf *Raft) sendLogEntries(server int, current_term int) {
 	rf.mu.Unlock()
 }
 
+func (rf *Raft) sendSnapshot(server int, current_term int) {
+	rf.mu.Lock()
+	id := rf.me
+	last_included_index := rf.last_included_index
+	last_included_term := rf.last_included_term
+	data := rf.persister.ReadSnapshot()
+	rf.mu.Unlock()
+
+	log.Printf("Leader %v is sending snapshot (lastIncludedIndex = %v, lastIncludedTerm = %v) to server %v... (Current term: %v)",
+		id, last_included_index, last_included_term, server, current_term)
+	args := InstallSnapshotArgs{CurrentTerm: current_term, LeaderId: id,
+		LastIncludedIndex: last_included_index, LastIncludedTerm: last_included_term, Data: data}
+	reply := InstallSnapshotReply{}
+
+	ok := rf.peers[server].Call("Raft.InstallSnapshot", &args, &reply)
+
+	rf.mu.Lock()
+	if ok {
+		if reply.CurrentTerm > rf.current_term {
+			log.Printf("Leader %v's term %v is out of date (newer term %v), reverting to follower...", id, rf.current_term, reply.CurrentTerm)
+			rf.updateTerm(reply.CurrentTerm)
+		}
+	} else {
+		log.Printf("Leader %v fails to send InstallSnapshot RPC to server %v! (Current term: %v)", id, server, current_term)
+	}
+	rf.mu.Unlock()
+}
+
 //
 // Update current term when seeing larger term
 // Leader or candidate will revert to follower
@@ -696,11 +724,15 @@ func (rf *Raft) leaderRoutine() {
 			rf.mu.Lock()
 			next_index := rf.next_index[i]
 			last_log_index := rf.last_included_index + len(rf.log)
+			last_included_index := rf.last_included_index
 			rf.mu.Unlock()
 
 			if last_log_index >= next_index {
-				// log.Printf("Debug: lastLogIndex = %v, nextIndex of server %v = %v", last_log_index, i, next_index)
-				go rf.sendLogEntries(i, current_term)
+				if next_index > last_included_index {
+					go rf.sendLogEntries(i, current_term)
+				} else {
+					go rf.sendSnapshot(i, current_term)
+				}
 			}
 		}
 	}
