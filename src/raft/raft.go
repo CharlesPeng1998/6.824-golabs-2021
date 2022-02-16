@@ -75,6 +75,7 @@ type Raft struct {
 	me                int                 // this peer's index into peers[]
 	dead              int32               // set by Kill()
 	heartbeat_channel chan int
+	applyCh           chan ApplyMsg
 
 	// These three states will be persistent
 	current_term        int
@@ -183,25 +184,26 @@ func (rf *Raft) readPersist(data []byte) {
 // have more recent info since it communicate the snapshot on applyCh.
 //
 func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludedIndex int, snapshot []byte) bool {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
+	/*
+		rf.mu.Lock()
+		defer rf.mu.Unlock()
 
-	if rf.last_included_index >= lastIncludedIndex { // Reject old snapshot
-		return false
-	} else if lastIncludedIndex > rf.last_included_index+len(rf.log) { // Snapshot contains new info -> Discard entire log
-		rf.last_included_index = lastIncludedIndex
-		rf.last_included_term = lastIncludedTerm
-		rf.log = []LogEntry{}
-		rf.persistStateAndSnapshot(snapshot)
-	} else if lastIncludedIndex <= rf.last_included_index+len(rf.log) { // Snapshot describes a prefix of the log
-		new_log := []LogEntry{}
-		new_log = append(new_log, rf.log[lastIncludedIndex-rf.last_included_index:len(rf.log)]...)
-		rf.log = new_log
-		rf.last_included_index = lastIncludedIndex
-		rf.last_included_term = lastIncludedTerm
-		rf.persistStateAndSnapshot(snapshot)
-	}
-
+		if rf.last_included_index >= lastIncludedIndex { // Reject old snapshot
+			return false
+		} else if lastIncludedIndex > rf.last_included_index+len(rf.log) { // Snapshot contains new info -> Discard entire log
+			rf.last_included_index = lastIncludedIndex
+			rf.last_included_term = lastIncludedTerm
+			rf.log = []LogEntry{}
+			rf.persistStateAndSnapshot(snapshot)
+		} else if lastIncludedIndex <= rf.last_included_index+len(rf.log) { // Snapshot describes a prefix of the log
+			new_log := []LogEntry{}
+			new_log = append(new_log, rf.log[lastIncludedIndex-rf.last_included_index:len(rf.log)]...)
+			rf.log = new_log
+			rf.last_included_index = lastIncludedIndex
+			rf.last_included_term = lastIncludedTerm
+			rf.persistStateAndSnapshot(snapshot)
+		}
+	*/
 	return true
 }
 
@@ -223,10 +225,7 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	rf.persistStateAndSnapshot(snapshot)
 }
 
-//
-// example RequestVote RPC arguments structure.
-// field names must start with capital letters!
-//
+/****** RPC-related Structures ******/
 type RequestVoteArgs struct {
 	CurrentTerm  int
 	CandidateId  int
@@ -234,10 +233,6 @@ type RequestVoteArgs struct {
 	LastLogTerm  int
 }
 
-//
-// example RequestVote RPC reply structure.
-// field names must start with capital letters!
-//
 type RequestVoteReply struct {
 	CurrentTerm int
 	VoteGranted bool
@@ -258,11 +253,27 @@ type AppendEntriesReply struct {
 	Success            bool
 }
 
-//
-// RequestVote RPC handler.
-//
+type InstallSnapshotArgs struct {
+	CurrentTerm       int
+	LeaderId          int
+	LastIncludedIndex int
+	LastIncludedTerm  int
+	Data              []byte
+}
+
+type InstallSnapshotReply struct {
+	CurrentTerm int
+}
+
+/****** RPC-related Structures ******/
+
+/*
+ @brief RequestVote RPC handler.
+*/
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
 	if args.CurrentTerm > rf.current_term {
 		rf.updateTerm(args.CurrentTerm)
 	}
@@ -303,12 +314,11 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		reply.VoteGranted = false
 	}
 	reply.CurrentTerm = rf.current_term
-	rf.mu.Unlock()
 }
 
-//
-// AppendEntries RPC handler
-//
+/*
+ @brief AppendEntries RPC handler
+*/
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
@@ -391,6 +401,48 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		}
 		log.Printf("Follower %v's commitIndex is updated from %v to %v... (Current term: %v)", rf.me, old_commit_index, rf.commit_index, rf.current_term)
 	}
+}
+
+/*
+ @brief InstallSnapshot RPC handler
+*/
+func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	// Update current term if seeing larger term
+	if args.CurrentTerm > rf.current_term {
+		rf.updateTerm(args.CurrentTerm)
+		reply.CurrentTerm = args.CurrentTerm
+	} else if args.CurrentTerm == rf.current_term {
+		reply.CurrentTerm = rf.current_term
+	} else if args.CurrentTerm < rf.current_term { // Leader is out-dated -> Return
+		reply.CurrentTerm = rf.current_term
+		return
+	}
+
+	if args.LastIncludedIndex <= rf.last_applied { // Snapshot is out-dated -> Not send to service
+		return
+	} else if args.LastIncludedIndex >= rf.last_included_index+len(rf.log) ||
+		rf.log[args.LastIncludedIndex-rf.last_included_index-1].Term != args.LastIncludedTerm { // Snapshot conflicts with log -> Discard entire log
+		rf.last_included_index = args.LastIncludedIndex
+		rf.last_included_term = args.LastIncludedTerm
+		rf.log = []LogEntry{}
+		rf.persistStateAndSnapshot(args.Data)
+	} else {
+		new_log := []LogEntry{}
+		new_log = append(new_log, rf.log[args.LastIncludedIndex-rf.last_included_index:len(rf.log)]...)
+		rf.log = new_log
+		rf.last_included_index = args.LastIncludedIndex
+		rf.last_included_term = args.LastIncludedTerm
+		rf.persistStateAndSnapshot(args.Data)
+	}
+
+	// Send snapshot to service
+	msg := ApplyMsg{SnapshotValid: true, Snapshot: args.Data,
+		SnapshotIndex: args.LastIncludedIndex, SnapshotTerm: args.LastIncludedTerm}
+	rf.applyCh <- msg
+	rf.last_applied = rf.last_included_index
 }
 
 /*
@@ -601,16 +653,16 @@ func (rf *Raft) killed() bool {
 /*
  @brief: The ticker is responsible for running server duties
 */
-func (rf *Raft) ticker(applyCh chan ApplyMsg) {
+func (rf *Raft) ticker() {
 	for rf.killed() == false {
 		rf.mu.Lock()
 		server_state := rf.state
 		rf.mu.Unlock()
 
 		if server_state == 2 { // Leader
-			rf.leaderRoutine(applyCh)
+			rf.leaderRoutine()
 		} else if server_state == 0 { // Follower
-			rf.followerRoutine(applyCh)
+			rf.followerRoutine()
 		} else if server_state == 1 { // Candidate
 			rf.candidateRoutine()
 		}
@@ -624,7 +676,7 @@ func (rf *Raft) ticker(applyCh chan ApplyMsg) {
 		 Commit log entries;
 		 Apply log entries;
 */
-func (rf *Raft) leaderRoutine(applyCh chan ApplyMsg) {
+func (rf *Raft) leaderRoutine() {
 	rf.mu.Lock()
 	me := rf.me
 	num_server := len(rf.peers)
@@ -682,7 +734,7 @@ func (rf *Raft) leaderRoutine(applyCh chan ApplyMsg) {
 		log_offset := index - rf.last_included_index - 1
 		apply_msg := ApplyMsg{CommandValid: true, Command: rf.log[log_offset].Command, CommandIndex: index}
 		select {
-		case applyCh <- apply_msg:
+		case rf.applyCh <- apply_msg:
 			rf.last_applied = index
 			log.Printf("Command %v has been applied in leader %v!", index, rf.me)
 		case <-time.After(10 * time.Millisecond):
@@ -696,7 +748,7 @@ func (rf *Raft) leaderRoutine(applyCh chan ApplyMsg) {
 /*
  @brief: Follower's routine: Checking recent hearbeat
 */
-func (rf *Raft) followerRoutine(applyCh chan ApplyMsg) {
+func (rf *Raft) followerRoutine() {
 	rf.mu.Lock()
 	rf.recent_heartbeat = false
 	election_timeout := rf.election_timeout
@@ -723,7 +775,7 @@ func (rf *Raft) followerRoutine(applyCh chan ApplyMsg) {
 		log_offset := index - rf.last_included_index - 1
 		apply_msg := ApplyMsg{CommandValid: true, Command: rf.log[log_offset].Command, CommandIndex: index}
 		select {
-		case applyCh <- apply_msg:
+		case rf.applyCh <- apply_msg:
 			rf.last_applied = index
 			log.Printf("Command %v has been applied in server %v!", index, rf.me)
 		case <-time.After(10 * time.Millisecond):
@@ -816,6 +868,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.persister = persister
 	rf.me = me
 	rf.heartbeat_channel = make(chan int, 1)
+	rf.applyCh = applyCh
 	rf.current_term = 0
 	rf.state = 0
 	rf.commit_index = 0
@@ -829,7 +882,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.readPersist(persister.ReadRaftState())
 
 	// start ticker goroutine to run this server
-	go rf.ticker(applyCh)
+	go rf.ticker()
 
 	return rf
 }
