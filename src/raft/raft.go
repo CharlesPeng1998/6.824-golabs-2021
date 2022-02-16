@@ -123,7 +123,6 @@ func (rf *Raft) GetState() (int, bool) {
 func (rf *Raft) persist() {
 	buffer := new(bytes.Buffer)
 	encoder := labgob.NewEncoder(buffer)
-
 	encoder.Encode(rf.current_term)
 	encoder.Encode(rf.voted_for)
 	encoder.Encode(rf.log)
@@ -131,6 +130,19 @@ func (rf *Raft) persist() {
 	encoder.Encode(rf.last_included_term)
 	data := buffer.Bytes()
 	rf.persister.SaveRaftState(data)
+}
+
+func (rf *Raft) persistStateAndSnapshot(snapshot []byte) {
+	buffer := new(bytes.Buffer)
+	encoder := labgob.NewEncoder(buffer)
+	encoder.Encode(rf.current_term)
+	encoder.Encode(rf.voted_for)
+	encoder.Encode(rf.log)
+	encoder.Encode(rf.last_included_index)
+	encoder.Encode(rf.last_included_term)
+	state_data := buffer.Bytes()
+
+	rf.persister.SaveStateAndSnapshot(state_data, snapshot)
 }
 
 /*
@@ -171,8 +183,24 @@ func (rf *Raft) readPersist(data []byte) {
 // have more recent info since it communicate the snapshot on applyCh.
 //
 func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludedIndex int, snapshot []byte) bool {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 
-	// Your code here (2D).
+	if rf.last_included_index >= lastIncludedIndex { // Reject old snapshot
+		return false
+	} else if lastIncludedIndex > rf.last_included_index+len(rf.log) { // Snapshot contains new info -> Discard entire log
+		rf.last_included_index = lastIncludedIndex
+		rf.last_included_term = lastIncludedTerm
+		rf.log = []LogEntry{}
+		rf.persistStateAndSnapshot(snapshot)
+	} else if lastIncludedIndex <= rf.last_included_index+len(rf.log) { // Snapshot describes a prefix of the log
+		new_log := []LogEntry{}
+		new_log = append(new_log, rf.log[lastIncludedIndex-rf.last_included_index:len(rf.log)]...)
+		rf.log = new_log
+		rf.last_included_index = lastIncludedIndex
+		rf.last_included_term = lastIncludedTerm
+		rf.persistStateAndSnapshot(snapshot)
+	}
 
 	return true
 }
@@ -192,18 +220,7 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	rf.last_included_index = index
 	rf.log = new_log
 
-	// Raft state
-	buffer := new(bytes.Buffer)
-	encoder := labgob.NewEncoder(buffer)
-	encoder.Encode(rf.current_term)
-	encoder.Encode(rf.voted_for)
-	encoder.Encode(rf.log)
-	encoder.Encode(rf.last_included_index)
-	encoder.Encode(rf.last_included_term)
-	state_data := buffer.Bytes()
-
-	// Persist Raft state and snapshot
-	rf.persister.SaveStateAndSnapshot(state_data, snapshot)
+	rf.persistStateAndSnapshot(snapshot)
 }
 
 //
