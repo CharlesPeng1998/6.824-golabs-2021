@@ -19,10 +19,8 @@ package raft
 
 import (
 	"bytes"
-	"fmt"
 	"log"
 	"math/rand"
-	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -31,13 +29,13 @@ import (
 	"6.824/labrpc"
 )
 
-func init() {
-	log_file, err := os.OpenFile("raft.log", os.O_WRONLY|os.O_CREATE, 0666)
-	if err != nil {
-		fmt.Println("Fail to open log file!", err)
-	}
-	log.SetOutput(log_file)
-}
+// func init() {
+// 	log_file, err := os.OpenFile("raft.log", os.O_WRONLY|os.O_CREATE, 0666)
+// 	if err != nil {
+// 		fmt.Println("Fail to open log file!", err)
+// 	}
+// 	log.SetOutput(log_file)
+// }
 
 //
 // as each Raft peer becomes aware that successive log entries are
@@ -166,7 +164,7 @@ func (rf *Raft) readPersist(data []byte) {
 		decoder.Decode(&voted_for_r) != nil ||
 		decoder.Decode(&log_r) != nil ||
 		decoder.Decode(&last_included_index) != nil ||
-		decoder.Decode(&last_included_term) {
+		decoder.Decode(&last_included_term) != nil {
 		log.Fatalf("Server %v failed to recover from previously persisted state!", rf.me)
 	} else {
 		rf.current_term = current_term_r
