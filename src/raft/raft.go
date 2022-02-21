@@ -215,7 +215,10 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 
 	// Trim the log
 	new_log := []LogEntry{}
-	new_log = append(new_log, rf.log[0:index-rf.last_included_index]...)
+	if index-rf.last_included_index < len(rf.log) {
+		new_log = append(new_log, rf.log[index-rf.last_included_index:len(rf.log)]...)
+	}
+
 	rf.last_included_term = rf.log[index-rf.last_included_index-1].Term
 	rf.last_included_index = index
 	rf.log = new_log
@@ -722,15 +725,16 @@ func (rf *Raft) leaderRoutine() {
 			rf.mu.Lock()
 			next_index := rf.next_index[i]
 			last_log_index := rf.last_included_index + len(rf.log)
-			last_included_index := rf.last_included_index
+			// last_included_index := rf.last_included_index
 			rf.mu.Unlock()
 
 			if last_log_index >= next_index {
-				if next_index > last_included_index {
-					go rf.sendLogEntries(i, current_term)
-				} else {
-					go rf.sendSnapshot(i, current_term)
-				}
+				go rf.sendLogEntries(i, current_term)
+				// if next_index > last_included_index {
+				// 	go rf.sendLogEntries(i, current_term)
+				// } else {
+				// 	go rf.sendSnapshot(i, current_term)
+				// }
 			}
 		}
 	}
