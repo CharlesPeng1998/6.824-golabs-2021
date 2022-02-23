@@ -19,8 +19,10 @@ package raft
 
 import (
 	"bytes"
+	"fmt"
 	"log"
 	"math/rand"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -29,13 +31,13 @@ import (
 	"6.824/labrpc"
 )
 
-// func init() {
-// 	log_file, err := os.OpenFile("raft.log", os.O_WRONLY|os.O_CREATE, 0666)
-// 	if err != nil {
-// 		fmt.Println("Fail to open log file!", err)
-// 	}
-// 	log.SetOutput(log_file)
-// }
+func init() {
+	log_file, err := os.OpenFile("raft.log", os.O_WRONLY|os.O_CREATE, 0666)
+	if err != nil {
+		fmt.Println("Fail to open log file!", err)
+	}
+	log.SetOutput(log_file)
+}
 
 //
 // as each Raft peer becomes aware that successive log entries are
@@ -73,6 +75,7 @@ type Raft struct {
 	me                int                 // this peer's index into peers[]
 	dead              int32               // set by Kill()
 	heartbeat_channel chan int
+	vote_channel      chan int
 
 	// These three states will be persistent
 	current_term int
@@ -377,6 +380,14 @@ func (rf *Raft) sendRequestVote(server int) {
 		} else if server_term == rf.current_term && vote_granted {
 			log.Printf("Candidate %v received a vote from server %v... (Current term: %v)", candidate_id, server, rf.current_term)
 			rf.vote_count += 1
+
+			// Inform the main goroutine if getting majority vote
+			if rf.vote_count > len(rf.peers)/2 {
+				select {
+				case rf.vote_channel <- 1:
+				default:
+				}
+			}
 		}
 	} else {
 		log.Printf("Candidate %v fails to send vote request to server %v! (Current term: %v)", candidate_id, server, current_term)
@@ -717,23 +728,12 @@ func (rf *Raft) candidateRoutine() {
 			}
 		}
 
-		// Sleep for an election timeout
-		// time.Sleep(time.Duration(election_timeout) * time.Millisecond)
-		for timeout_remain := election_timeout; timeout_remain > 0; {
-			if timeout_remain >= 50 {
-				time.Sleep(50 * time.Millisecond)
-				timeout_remain -= 50
-			} else {
-				time.Sleep(time.Duration(timeout_remain) * time.Millisecond)
-				timeout_remain = 0
-			}
-
-			rf.mu.Lock()
-			if rf.vote_count > len(rf.peers)/2 {
-				rf.mu.Unlock()
-				break
-			}
-			rf.mu.Unlock()
+		// Wait for majority vote
+		majority_vote := false
+		select {
+		case <-rf.vote_channel:
+			majority_vote = true
+		case <-time.After(time.Duration(election_timeout) * time.Millisecond):
 		}
 
 		rf.mu.Lock()
@@ -741,7 +741,8 @@ func (rf *Raft) candidateRoutine() {
 			rf.mu.Unlock()
 			break
 		}
-		if rf.vote_count > len(rf.peers)/2 {
+
+		if majority_vote {
 			log.Printf("Candidate %v obtained majority vote, now becomes leader... (Current term: %v)", rf.me, rf.current_term)
 			rf.state = 2
 			rf.next_index = make([]int, len(rf.peers))
@@ -788,6 +789,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.persister = persister
 	rf.me = me
 	rf.heartbeat_channel = make(chan int, 1)
+	rf.vote_channel = make(chan int)
 	rf.current_term = 0
 	rf.state = 0
 	rf.commit_index = 0
