@@ -73,6 +73,7 @@ type Raft struct {
 	me                int                 // this peer's index into peers[]
 	dead              int32               // set by Kill()
 	heartbeat_channel chan int
+	vote_channel      chan int
 	applyCh           chan ApplyMsg
 
 	// These three states will be persistent
@@ -475,7 +476,16 @@ func (rf *Raft) sendRequestVote(server int) {
 			log.Printf("Candidate %v's term %v is out of date (newer term %v), reverting to follower...", candidate_id, rf.current_term, server_term)
 			rf.updateTerm(server_term)
 		} else if server_term == rf.current_term && vote_granted {
+			log.Printf("Candidate %v received a vote from server %v... (Current term: %v)", candidate_id, server, rf.current_term)
 			rf.vote_count += 1
+
+			// Inform the main goroutine if getting majority vote
+			if rf.vote_count > len(rf.peers)/2 {
+				select {
+				case rf.vote_channel <- 1:
+				default:
+				}
+			}
 		}
 	} else {
 		log.Printf("Candidate %v fails to send vote request to server %v! (Current term: %v)", candidate_id, server, current_term)
@@ -511,8 +521,8 @@ func (rf *Raft) sendHeartBeat(server int, current_term int) {
 
 	rf.mu.Lock()
 	if ok {
-		if reply.CurrentTerm > rf.current_term { // This leader is out-dated
-			log.Printf("Leader %v's term %v is out of date (newer term %v), reverting to follower...", id, rf.current_term, reply.CurrentTerm)
+		if reply.CurrentTerm > current_term { // This leader is out-dated
+			log.Printf("Leader %v's term %v is out of date (newer term %v), reverting to follower...", id, current_term, reply.CurrentTerm)
 			rf.updateTerm(reply.CurrentTerm)
 		}
 	} else {
@@ -553,8 +563,8 @@ func (rf *Raft) sendLogEntries(server int, current_term int) {
 
 	rf.mu.Lock()
 	if ok {
-		if reply.CurrentTerm > rf.current_term { // This leader is out-dated
-			log.Printf("Leader %v's term %v is out of date (newer term %v), reverting to follower...", id, rf.current_term, reply.CurrentTerm)
+		if reply.CurrentTerm > current_term { // This leader is out-dated
+			log.Printf("Leader %v's term %v is out of date (newer term %v), reverting to follower...", id, current_term, reply.CurrentTerm)
 			rf.updateTerm(reply.CurrentTerm)
 		} else if reply.Success == false { // Inconsistency -> Update nextIndex
 			rf.next_index[server] = reply.FirstConflictIndex
@@ -604,12 +614,14 @@ func (rf *Raft) sendSnapshot(server int, current_term int) {
 // voted_for will be set to -1
 //
 func (rf *Raft) updateTerm(new_term int) {
-	rf.current_term = new_term
-	rf.state = 0
-	rf.voted_for = -1
+	if new_term > rf.current_term {
+		rf.current_term = new_term
+		rf.state = 0
+		rf.voted_for = -1
 
-	// Persist
-	rf.persist()
+		// Persist
+		rf.persist()
+	}
 }
 
 /*
@@ -847,15 +859,21 @@ func (rf *Raft) candidateRoutine() {
 			}
 		}
 
-		// Sleep for an election timeout
-		time.Sleep(time.Duration(election_timeout) * time.Millisecond)
+		// Wait for majority vote
+		majority_vote := false
+		select {
+		case <-rf.vote_channel:
+			majority_vote = true
+		case <-time.After(time.Duration(election_timeout) * time.Millisecond):
+		}
 
 		rf.mu.Lock()
 		if rf.state != 1 {
 			rf.mu.Unlock()
 			break
 		}
-		if rf.vote_count > len(rf.peers)/2 {
+
+		if majority_vote {
 			log.Printf("Candidate %v obtained majority vote, now becomes leader... (Current term: %v)", rf.me, rf.current_term)
 			rf.state = 2
 			rf.next_index = make([]int, len(rf.peers))
@@ -902,6 +920,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.persister = persister
 	rf.me = me
 	rf.heartbeat_channel = make(chan int, 1)
+	rf.vote_channel = make(chan int)
 	rf.applyCh = applyCh
 	rf.current_term = 0
 	rf.state = 0
