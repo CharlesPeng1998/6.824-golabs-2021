@@ -19,10 +19,8 @@ package raft
 
 import (
 	"bytes"
-	"fmt"
 	"log"
 	"math/rand"
-	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -31,13 +29,13 @@ import (
 	"6.824/labrpc"
 )
 
-func init() {
-	log_file, err := os.OpenFile("raft.log", os.O_WRONLY|os.O_CREATE, 0666)
-	if err != nil {
-		fmt.Println("Fail to open log file!", err)
-	}
-	log.SetOutput(log_file)
-}
+// func init() {
+// 	log_file, err := os.OpenFile("raft.log", os.O_WRONLY|os.O_CREATE, 0666)
+// 	if err != nil {
+// 		fmt.Println("Fail to open log file!", err)
+// 	}
+// 	log.SetOutput(log_file)
+// }
 
 //
 // as each Raft peer becomes aware that successive log entries are
@@ -377,6 +375,7 @@ func (rf *Raft) sendRequestVote(server int) {
 			log.Printf("Candidate %v's term %v is out of date (newer term %v), reverting to follower...", candidate_id, rf.current_term, server_term)
 			rf.updateTerm(server_term)
 		} else if server_term == rf.current_term && vote_granted {
+			log.Printf("Candidate %v received a vote from server %v... (Current term: %v)", candidate_id, server, rf.current_term)
 			rf.vote_count += 1
 		}
 	} else {
@@ -413,8 +412,8 @@ func (rf *Raft) sendHeartBeat(server int, current_term int) {
 
 	rf.mu.Lock()
 	if ok {
-		if reply.CurrentTerm > rf.current_term { // This leader is out-dated
-			log.Printf("Leader %v's term %v is out of date (newer term %v), reverting to follower...", id, rf.current_term, reply.CurrentTerm)
+		if reply.CurrentTerm > current_term { // This leader is out-dated
+			log.Printf("Leader %v's term %v is out of date (newer term %v), reverting to follower...", id, current_term, reply.CurrentTerm)
 			rf.updateTerm(reply.CurrentTerm)
 		}
 	} else {
@@ -455,8 +454,8 @@ func (rf *Raft) sendLogEntries(server int, current_term int) {
 
 	rf.mu.Lock()
 	if ok {
-		if reply.CurrentTerm > rf.current_term { // This leader is out-dated
-			log.Printf("Leader %v's term %v is out of date (newer term %v), reverting to follower...", id, rf.current_term, reply.CurrentTerm)
+		if reply.CurrentTerm > current_term { // This leader is out-dated
+			log.Printf("Leader %v's term %v is out of date (newer term %v), reverting to follower...", id, current_term, reply.CurrentTerm)
 			rf.updateTerm(reply.CurrentTerm)
 		} else if reply.Success == false { // Inconsistency -> Update nextIndex
 			rf.next_index[server] = reply.FirstConflictIndex
@@ -478,12 +477,14 @@ func (rf *Raft) sendLogEntries(server int, current_term int) {
 // voted_for will be set to -1
 //
 func (rf *Raft) updateTerm(new_term int) {
-	rf.current_term = new_term
-	rf.state = 0
-	rf.voted_for = -1
+	if new_term > rf.current_term {
+		rf.current_term = new_term
+		rf.state = 0
+		rf.voted_for = -1
 
-	// Persist
-	rf.persist()
+		// Persist
+		rf.persist()
+	}
 }
 
 /*
@@ -717,7 +718,23 @@ func (rf *Raft) candidateRoutine() {
 		}
 
 		// Sleep for an election timeout
-		time.Sleep(time.Duration(election_timeout) * time.Millisecond)
+		// time.Sleep(time.Duration(election_timeout) * time.Millisecond)
+		for timeout_remain := election_timeout; timeout_remain > 0; {
+			if timeout_remain >= 50 {
+				time.Sleep(50 * time.Millisecond)
+				timeout_remain -= 50
+			} else {
+				time.Sleep(time.Duration(timeout_remain) * time.Millisecond)
+				timeout_remain = 0
+			}
+
+			rf.mu.Lock()
+			if rf.vote_count > len(rf.peers)/2 {
+				rf.mu.Unlock()
+				break
+			}
+			rf.mu.Unlock()
+		}
 
 		rf.mu.Lock()
 		if rf.state != 1 {
