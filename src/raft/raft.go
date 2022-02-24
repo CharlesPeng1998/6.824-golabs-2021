@@ -776,6 +776,7 @@ func (rf *Raft) leaderRoutine() {
 	}
 
 	// Apply those unapplied command
+	apply_success := true
 	for index := rf.last_applied + 1; index <= rf.commit_index; index++ {
 		log_offset := index - rf.last_included_index - 1
 		apply_msg := ApplyMsg{CommandValid: true, Command: rf.log[log_offset].Command, CommandIndex: index}
@@ -785,6 +786,10 @@ func (rf *Raft) leaderRoutine() {
 			log.Printf("Command %v has been applied in leader %v!", index, rf.me)
 		case <-time.After(10 * time.Millisecond):
 			log.Printf("Fail to apply command %v in 10 ms in server %v!", index, rf.me)
+			apply_success = false
+		}
+
+		if !apply_success {
 			break
 		}
 	}
@@ -817,6 +822,7 @@ func (rf *Raft) followerRoutine() {
 
 	// Apply those applied command
 	rf.mu.Lock()
+	apply_success := true
 	for index := rf.last_applied + 1; index <= rf.commit_index; index++ {
 		log_offset := index - rf.last_included_index - 1
 		apply_msg := ApplyMsg{CommandValid: true, Command: rf.log[log_offset].Command, CommandIndex: index}
@@ -826,6 +832,10 @@ func (rf *Raft) followerRoutine() {
 			log.Printf("Command %v has been applied in server %v!", index, rf.me)
 		case <-time.After(10 * time.Millisecond):
 			log.Printf("Fail to apply command %v in 10 ms in server %v!", index, rf.me)
+			apply_success = false
+		}
+
+		if !apply_success {
 			break
 		}
 	}
