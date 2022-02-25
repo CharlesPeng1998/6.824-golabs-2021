@@ -224,6 +224,9 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	rf.last_included_index = index
 	rf.log = new_log
 
+	log.Printf("Snapshot is created for server %v: lastIncludedIndex = %v, lastIncludedTerm = %v... (Current term: %v)",
+		rf.me, rf.last_included_index, rf.last_included_term, rf.current_term)
+
 	rf.persistStateAndSnapshot(snapshot)
 }
 
@@ -394,7 +397,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 
 	// Update committed log entries
-	if consistent && args.LeaderCommit > rf.commit_index {
+	if consistent && args.LeaderCommit > rf.commit_index && prev_log_index+len(args.Entries) > rf.commit_index {
 		old_commit_index := rf.commit_index
 		if args.LeaderCommit <= prev_log_index+len(args.Entries) {
 			rf.commit_index = args.LeaderCommit
@@ -424,12 +427,16 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 	}
 
 	if args.LastIncludedIndex <= rf.last_applied { // Snapshot is out-dated -> Not send to service
+		log.Printf("Server %v sees out-dated snapshot: lastIncludedIndex = %v, lastApplied = %v... (Current term: %v)",
+			rf.me, args.LastIncludedIndex, rf.last_applied, rf.current_term)
 		return
 	} else if args.LastIncludedIndex >= rf.last_included_index+len(rf.log) ||
 		rf.log[args.LastIncludedIndex-rf.last_included_index-1].Term != args.LastIncludedTerm { // Snapshot conflicts with log -> Discard entire log
 		rf.last_included_index = args.LastIncludedIndex
 		rf.last_included_term = args.LastIncludedTerm
 		rf.log = []LogEntry{}
+		log.Printf("Server %v installs snapshot: lastIncludedIndex = %v, lastIncludedTerm = %v... (Current term: %v)",
+			rf.me, args.LastIncludedIndex, args.LastIncludedTerm, rf.current_term)
 		rf.persistStateAndSnapshot(args.Data)
 	} else {
 		new_log := []LogEntry{}
@@ -437,6 +444,8 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 		rf.log = new_log
 		rf.last_included_index = args.LastIncludedIndex
 		rf.last_included_term = args.LastIncludedTerm
+		log.Printf("Server %v installs snapshot: lastIncludedIndex = %v, lastIncludedTerm = %v... (Current term: %v)",
+			rf.me, args.LastIncludedIndex, args.LastIncludedTerm, rf.current_term)
 		rf.persistStateAndSnapshot(args.Data)
 	}
 
@@ -445,6 +454,9 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 		SnapshotIndex: args.LastIncludedIndex, SnapshotTerm: args.LastIncludedTerm}
 	rf.applyCh <- msg
 	rf.last_applied = rf.last_included_index
+	rf.commit_index = rf.last_included_index
+	log.Printf("Server %v sends snapshot to service: lastIncludedIndex = %v, lastIncludedTerm = %v... (Current term: %v)",
+		rf.me, args.LastIncludedIndex, args.LastIncludedTerm, rf.current_term)
 }
 
 /*
@@ -598,9 +610,12 @@ func (rf *Raft) sendSnapshot(server int, current_term int) {
 
 	rf.mu.Lock()
 	if ok {
-		if reply.CurrentTerm > rf.current_term {
-			log.Printf("Leader %v's term %v is out of date (newer term %v), reverting to follower...", id, rf.current_term, reply.CurrentTerm)
+		if reply.CurrentTerm > current_term {
+			log.Printf("Leader %v's term %v is out of date (newer term %v), reverting to follower...", id, current_term, reply.CurrentTerm)
 			rf.updateTerm(reply.CurrentTerm)
+		} else {
+			rf.next_index[server] = last_included_index + 1
+			rf.match_index[server] = last_included_index
 		}
 	} else {
 		log.Printf("Leader %v fails to send InstallSnapshot RPC to server %v! (Current term: %v)", id, server, current_term)
@@ -737,16 +752,16 @@ func (rf *Raft) leaderRoutine() {
 			rf.mu.Lock()
 			next_index := rf.next_index[i]
 			last_log_index := rf.last_included_index + len(rf.log)
-			// last_included_index := rf.last_included_index
+			last_included_index := rf.last_included_index
 			rf.mu.Unlock()
 
 			if last_log_index >= next_index {
-				go rf.sendLogEntries(i, current_term)
-				// if next_index > last_included_index {
-				// 	go rf.sendLogEntries(i, current_term)
-				// } else {
-				// 	go rf.sendSnapshot(i, current_term)
-				// }
+				// go rf.sendLogEntries(i, current_term)
+				if next_index > last_included_index {
+					go rf.sendLogEntries(i, current_term)
+				} else {
+					go rf.sendSnapshot(i, current_term)
+				}
 			}
 		}
 	}
