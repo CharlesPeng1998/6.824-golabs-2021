@@ -173,6 +173,8 @@ func (rf *Raft) readPersist(data []byte) {
 		rf.log = log_r
 		rf.last_included_index = last_included_index
 		rf.last_included_term = last_included_term
+		rf.last_applied = last_included_index
+		rf.commit_index = last_included_index
 		log.Printf("Server %v recoverd from persisted state: Current term %v, Voted for %v...", rf.me, rf.current_term, rf.voted_for)
 	}
 	rf.mu.Unlock()
