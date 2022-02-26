@@ -179,30 +179,9 @@ func (rf *Raft) readPersist(data []byte) {
 }
 
 //
-// A service wants to switch to snapshot.  Only do so if Raft hasn't
-// have more recent info since it communicate the snapshot on applyCh.
+// A trivial interface
 //
 func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludedIndex int, snapshot []byte) bool {
-	/*
-		rf.mu.Lock()
-		defer rf.mu.Unlock()
-
-		if rf.last_included_index >= lastIncludedIndex { // Reject old snapshot
-			return false
-		} else if lastIncludedIndex > rf.last_included_index+len(rf.log) { // Snapshot contains new info -> Discard entire log
-			rf.last_included_index = lastIncludedIndex
-			rf.last_included_term = lastIncludedTerm
-			rf.log = []LogEntry{}
-			rf.persistStateAndSnapshot(snapshot)
-		} else if lastIncludedIndex <= rf.last_included_index+len(rf.log) { // Snapshot describes a prefix of the log
-			new_log := []LogEntry{}
-			new_log = append(new_log, rf.log[lastIncludedIndex-rf.last_included_index:len(rf.log)]...)
-			rf.log = new_log
-			rf.last_included_index = lastIncludedIndex
-			rf.last_included_term = lastIncludedTerm
-			rf.persistStateAndSnapshot(snapshot)
-		}
-	*/
 	return true
 }
 
@@ -546,22 +525,23 @@ func (rf *Raft) sendHeartBeat(server int, current_term int) {
 /*
  @brief: Send log entries to a server
 */
-func (rf *Raft) sendLogEntries(server int, current_term int) {
+func (rf *Raft) sendLogEntries(server int, current_term int,
+	last_included_index int, last_included_term int, log_copy []LogEntry) {
 	rf.mu.Lock()
 	id := rf.me
-	log_len := len(rf.log)
+	log_len := len(log_copy)
 	prev_log_index := rf.next_index[server] - 1
 	var prev_log_term int
-	if prev_log_index <= rf.last_included_index {
-		prev_log_term = rf.last_included_term
+	if prev_log_index <= last_included_index {
+		prev_log_term = last_included_term
 	} else {
-		log_offset := prev_log_index - rf.last_included_index - 1
-		prev_log_term = rf.log[log_offset].Term
+		log_offset := prev_log_index - last_included_index - 1
+		prev_log_term = log_copy[log_offset].Term
 	}
 	leader_commit := rf.commit_index
-	start_offset := rf.next_index[server] - rf.last_included_index - 1
+	start_offset := rf.next_index[server] - last_included_index - 1
 	var entries []LogEntry
-	entries = append(entries, rf.log[start_offset:len(rf.log)]...)
+	entries = append(entries, log_copy[start_offset:len(log_copy)]...)
 	// log.Printf("Debug: start_offset = %v, nextIndex[%v] = %v... (Current term: %v)", start_offset, server, rf.next_index[server], rf.current_term)
 	rf.mu.Unlock()
 
@@ -582,8 +562,8 @@ func (rf *Raft) sendLogEntries(server int, current_term int) {
 			rf.next_index[server] = reply.FirstConflictIndex
 			log.Printf("Leader %v's log is inconsistent with server %v! First conflict index is %v... (Current term: %v)", id, server, reply.FirstConflictIndex, current_term)
 		} else { // Success
-			rf.next_index[server] = rf.last_included_index + log_len + 1
-			rf.match_index[server] = rf.last_included_index + log_len
+			rf.next_index[server] = last_included_index + log_len + 1
+			rf.match_index[server] = last_included_index + log_len
 			log.Printf("Leader %v succeeded to append log entries to server %v! (Current term: %v)", id, server, current_term)
 		}
 	} else {
@@ -753,12 +733,15 @@ func (rf *Raft) leaderRoutine() {
 			next_index := rf.next_index[i]
 			last_log_index := rf.last_included_index + len(rf.log)
 			last_included_index := rf.last_included_index
+			last_included_term := rf.last_included_term
+			log_copy := []LogEntry{}
+			log_copy = append(log_copy, rf.log...)
 			rf.mu.Unlock()
 
 			if last_log_index >= next_index {
 				// go rf.sendLogEntries(i, current_term)
 				if next_index > last_included_index {
-					go rf.sendLogEntries(i, current_term)
+					go rf.sendLogEntries(i, current_term, last_included_index, last_included_term, log_copy)
 				} else {
 					go rf.sendSnapshot(i, current_term)
 				}
