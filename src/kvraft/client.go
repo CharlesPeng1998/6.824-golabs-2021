@@ -10,6 +10,7 @@ import (
 
 type Clerk struct {
 	servers      []*labrpc.ClientEnd
+	clerk_id     int64
 	operation_id int
 	last_leader  int
 }
@@ -24,6 +25,7 @@ func nrand() int64 {
 func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	ck.servers = servers
+	ck.clerk_id = nrand()
 	ck.operation_id = 0
 	ck.last_leader = 0
 
@@ -43,24 +45,24 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 // arguments. and reply must be passed as a pointer.
 //
 func (ck *Clerk) Get(key string) string {
-	args := GetArgs{ID: ck.operation_id, Key: key}
+	args := GetArgs{Clerk_id: ck.clerk_id, Op_id: ck.operation_id, Key: key}
 	reply := GetReply{}
 
 	possible_leader := ck.last_leader
 	ret := ""
 
 	for {
-		log.Printf("Clerk is sending Get RPC to server %v, Key = %v, operation ID = %v...",
-			possible_leader, key, ck.operation_id)
+		log.Printf("Clerk %v is sending Get RPC to server %v, Key = %v, operation ID = %v...",
+			ck.clerk_id, possible_leader, key, ck.operation_id)
 		ok := ck.servers[possible_leader].Call("KVServer.Get", &args, &reply)
 		if ok && reply.Success {
-			log.Printf("Clerk succeeds in calling Get to server %v, Key = %v, Value = %v, operation ID = %v...",
-				possible_leader, key, reply.Value, ck.operation_id)
+			log.Printf("Clerk %v succeeds in calling Get to server %v, Key = %v, Value = %v, operation ID = %v...",
+				ck.clerk_id, possible_leader, key, reply.Value, ck.operation_id)
 			ret = reply.Value
 			break
 		} else {
-			log.Printf("Clerk fails in calling Get to server %v, Key = %v, operation ID = %v! Resending...",
-				possible_leader, key, ck.operation_id)
+			log.Printf("Clerk %v fails in calling Get to server %v, Key = %v, operation ID = %v! Resending...",
+				ck.clerk_id, possible_leader, key, ck.operation_id)
 			possible_leader = (possible_leader + 1) % len(ck.servers)
 		}
 	}
@@ -81,7 +83,7 @@ func (ck *Clerk) Get(key string) string {
 // arguments. and reply must be passed as a pointer.
 //
 func (ck *Clerk) PutAppend(key string, value string, op string) {
-	args := PutAppendArgs{ID: ck.operation_id, Key: key, Value: value}
+	args := PutAppendArgs{Clerk_id: ck.clerk_id, Op_id: ck.operation_id, Key: key, Value: value}
 	if op == "Put" {
 		args.Type = 0
 	} else if op == "Append" {
@@ -92,16 +94,16 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 	possible_leader := ck.last_leader
 
 	for {
-		log.Printf("Clerk is sending PutAppend RPC to server %v, Type = %v, Key = %v, Value = %v, operation ID = %v...",
-			possible_leader, args.Type, key, value, ck.operation_id)
+		log.Printf("Clerk %v is sending PutAppend RPC to server %v, Type = %v, Key = %v, Value = %v, operation ID = %v...",
+			ck.clerk_id, possible_leader, args.Type, key, value, ck.operation_id)
 		ok := ck.servers[possible_leader].Call("KVServer.PutAppend", &args, &reply)
 		if ok && reply.Success {
-			log.Printf("Clerk succeeds in calling PutAppend RPC to server %v, Type = %v, Key = %v, Value = %v, operation ID = %v...",
-				possible_leader, args.Type, key, value, ck.operation_id)
+			log.Printf("Clerk %v succeeds in calling PutAppend RPC to server %v, Type = %v, Key = %v, Value = %v, operation ID = %v...",
+				ck.clerk_id, possible_leader, args.Type, key, value, ck.operation_id)
 			break
 		} else {
-			log.Printf("Clerk fails in calling PutAppend RPC to server %v, Type = %v, Key = %v, Value = %v, operation ID = %v! Resending...",
-				possible_leader, args.Type, key, value, ck.operation_id)
+			log.Printf("Clerk %v fails in calling PutAppend RPC to server %v, Type = %v, Key = %v, Value = %v, operation ID = %v! Resending...",
+				ck.clerk_id, possible_leader, args.Type, key, value, ck.operation_id)
 			possible_leader = (possible_leader + 1) % len(ck.servers)
 		}
 	}

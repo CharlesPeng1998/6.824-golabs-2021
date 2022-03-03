@@ -38,8 +38,9 @@ type KVServer struct {
 }
 
 type GetArgs struct {
-	ID  int
-	Key string
+	Clerk_id int64
+	Op_id    int
+	Key      string
 }
 
 type GetReply struct {
@@ -48,10 +49,11 @@ type GetReply struct {
 }
 
 type PutAppendArgs struct {
-	ID    int
-	Type  int // 0 for Put and 1 for Append
-	Key   string
-	Value string
+	Clerk_id int64
+	Op_id    int
+	Type     int // 0 for Put and 1 for Append
+	Key      string
+	Value    string
 }
 
 type PutAppendReply struct {
