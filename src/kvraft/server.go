@@ -20,9 +20,11 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 }
 
 type Op struct {
-	// Your definitions here.
-	// Field names must start with capital letters,
-	// otherwise RPC will break.
+	Clerk_id int64
+	Op_id    int
+	Type     int // 0 for Put, 1 for Append and 2 for Get
+	Key      string
+	Value    string
 }
 
 type KVServer struct {
@@ -32,9 +34,10 @@ type KVServer struct {
 	applyCh chan raft.ApplyMsg
 	dead    int32 // set by Kill()
 
-	maxraftstate int // snapshot if log grows this big
-
-	// Your definitions here.
+	maxraftstate  int               // snapshot if log grows this big
+	clerk2maxOpId map[int64]int     // the maximum operation id for each clerk
+	informCh      map[int]chan Op   // channels used to inform RPC handlers
+	kv_data       map[string]string // the key-value data
 }
 
 type GetArgs struct {
@@ -66,6 +69,37 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
+}
+
+func (kv *KVServer) apply() {
+	for apply_msg := range kv.applyCh {
+		operation := apply_msg.Command
+
+		kv.mu.Lock()
+		// Neglect duplicate client request
+		if kv.clerk2maxOpId[operation.Clerk_id] >= operation.Op_id {
+			log.Printf("KVServer %v sees duplicate operation id from clerk %v: %v (Max operation ID = %v)",
+				kv.me, operation.Clerk_id, operation.Op_id, kv.clerk2maxOpId[operation.Clerk_id])
+			continue
+		}
+
+		if operation.Type == 0 { // Put
+			kv.kv_data[operation.Key] = operation.Value
+			log.Printf("KVServer %v applies Put from clerk %v: Operation ID = %v, Key = %v, Value = %v",
+				kv.me, operation.Clerk_id, operation.Op_id, operation.Key, operation.Value)
+		} else if operation.Type == 1 { // Append
+			kv.kv_data[operation.Key] += operation.Value
+			log.Printf("KVServer %v applies Append from clerk %v: Operation ID = %v, Key = %v, Value = %v",
+				kv.me, operation.Clerk_id, operation.Op_id, operation.Key, operation.Value)
+		} else if operation.Type == 2 { // Get
+			log.Printf("KVServer %v applies Get from clerk %v: Operation ID = %v, Key = %v",
+				kv.me, operation.Clerk_id, operation.Op_id, operation.Key)
+		}
+		kv.mu.Unlock()
+
+		index := apply_msg.CommandIndex
+		kv.informCh[index] <- operation
+	}
 }
 
 //
@@ -111,13 +145,13 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv := new(KVServer)
 	kv.me = me
 	kv.maxraftstate = maxraftstate
-
-	// You may need initialization code here.
+	kv.clerk2maxOpId = make(map[int64]int)
+	kv.kv_data = make(map[string]string)
 
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
-	// You may need initialization code here.
+	go kv.apply()
 
 	return kv
 }
