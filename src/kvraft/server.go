@@ -92,8 +92,13 @@ func (kv *KVServer) apply() {
 			log.Printf("KVServer %v applies Append from clerk %v: Operation ID = %v, Key = %v, Value = %v",
 				kv.me, operation.Clerk_id, operation.Op_id, operation.Key, operation.Value)
 		} else if operation.Type == 2 { // Get
-			log.Printf("KVServer %v applies Get from clerk %v: Operation ID = %v, Key = %v",
-				kv.me, operation.Clerk_id, operation.Op_id, operation.Key)
+			if value, ok := kv.kv_data[operation.Key]; ok {
+				operation.Value = value
+			} else {
+				operation.Value = ""
+			}
+			log.Printf("KVServer %v applies Get from clerk %v: Operation ID = %v, Key = %v, Value = %v",
+				kv.me, operation.Clerk_id, operation.Op_id, operation.Key, operation.Value)
 		}
 		kv.mu.Unlock()
 
