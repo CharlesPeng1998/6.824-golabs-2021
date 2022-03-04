@@ -4,6 +4,7 @@ import (
 	"log"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"6.824/labgob"
 	"6.824/labrpc"
@@ -64,7 +65,37 @@ type PutAppendReply struct {
 }
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
-	// Your code here.
+	operation := Op{Clerk_id: args.Clerk_id, Op_id: args.Op_id, Type: 2, Key: args.Key}
+	index, _, isLeader := kv.rf.Start(operation)
+
+	if !isLeader { // This server is not leader
+		reply.Success = false
+		return
+	}
+
+	kv.mu.Lock()
+	kv.informCh[index] = make(chan Op, 1)
+	kv.mu.Unlock()
+
+	select {
+	case recv_operation := <-kv.informCh[index]:
+		if recv_operation.Clerk_id == args.Clerk_id && recv_operation.Op_id == args.Op_id {
+			log.Printf("KVServer %v's Get handler succeeds to see operation from clerk %v: Operation ID = %v, Key = %v, Value = %v",
+				kv.me, recv_operation.Clerk_id, recv_operation.Op_id, recv_operation.Key, recv_operation.Value)
+			reply.Success = true
+			reply.Value = recv_operation.Value
+		} else {
+			log.Printf("KVServer %v' Get handler sees different operation at index %v", kv.me, index)
+			reply.Success = false
+		}
+	case <-time.After(500 * time.Millisecond):
+		log.Printf("KVServer %v's Get handler fails to see operation from clerk %v in 500ms: Operation ID = %v, Key = %v",
+			kv.me, operation.Clerk_id, operation.Op_id, operation.Key)
+	}
+
+	kv.mu.Lock()
+	delete(kv.informCh, index)
+	kv.mu.Unlock()
 }
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
@@ -76,14 +107,11 @@ func (kv *KVServer) apply() {
 		operation := apply_msg.Command
 
 		kv.mu.Lock()
-		// Neglect duplicate client request
-		if kv.clerk2maxOpId[operation.Clerk_id] >= operation.Op_id {
-			log.Printf("KVServer %v sees duplicate operation id from clerk %v: %v (Max operation ID = %v)",
-				kv.me, operation.Clerk_id, operation.Op_id, kv.clerk2maxOpId[operation.Clerk_id])
-			continue
-		}
 
-		if operation.Type == 0 { // Put
+		if kv.clerk2maxOpId[operation.Clerk_id] >= operation.Op_id && operation.Type == 0 && operation.Type == 1 { // Duplicate write operation
+			log.Printf("KVServer %v sees duplicate write operation id from clerk %v: %v (Max operation ID = %v)",
+				kv.me, operation.Clerk_id, operation.Op_id, kv.clerk2maxOpId[operation.Clerk_id])
+		} else if operation.Type == 0 { // Put
 			kv.kv_data[operation.Key] = operation.Value
 			log.Printf("KVServer %v applies Put from clerk %v: Operation ID = %v, Key = %v, Value = %v",
 				kv.me, operation.Clerk_id, operation.Op_id, operation.Key, operation.Value)
@@ -100,10 +128,18 @@ func (kv *KVServer) apply() {
 			log.Printf("KVServer %v applies Get from clerk %v: Operation ID = %v, Key = %v, Value = %v",
 				kv.me, operation.Clerk_id, operation.Op_id, operation.Key, operation.Value)
 		}
-		kv.mu.Unlock()
+
+		kv.clerk2maxOpId[operation.Clerk_id] = operation.Op_id
+
+		if kv.clerk2maxOpId[operation.Clerk_id] < operation.Op_id {
+			kv.clerk2maxOpId[operation.Clerk_id] = operation.Op_id
+		}
 
 		index := apply_msg.CommandIndex
-		kv.informCh[index] <- operation
+		if _, ok := kv.informCh[index]; ok {
+			kv.informCh[index] <- operation
+		}
+		kv.mu.Unlock()
 	}
 }
 
@@ -151,6 +187,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.me = me
 	kv.maxraftstate = maxraftstate
 	kv.clerk2maxOpId = make(map[int64]int)
+	kv.informCh = make(map[int]chan Op)
 	kv.kv_data = make(map[string]string)
 
 	kv.applyCh = make(chan raft.ApplyMsg)
