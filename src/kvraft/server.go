@@ -129,15 +129,20 @@ func (kv *KVServer) apply() {
 				kv.me, operation.Clerk_id, operation.Op_id, operation.Key, operation.Value)
 		}
 
-		kv.clerk2maxOpId[operation.Clerk_id] = operation.Op_id
-
 		if kv.clerk2maxOpId[operation.Clerk_id] < operation.Op_id {
 			kv.clerk2maxOpId[operation.Clerk_id] = operation.Op_id
+			log.Printf("KVServer %v updates maximum operation ID for clerk %v: %v",
+				kv.me, operation.Clerk_id, operation.Op_id)
 		}
 
 		index := apply_msg.CommandIndex
 		if _, ok := kv.informCh[index]; ok {
+			log.Printf("KVServer %v's applier sends operation to channel %v: Clerk ID = %v, Operation ID = %v, Type = %v, Key = %v, Value = %v",
+				kv.me, index, operation.Clerk_id, operation.Op_id, operation.Type, operation.Key, operation.Value)
 			kv.informCh[index] <- operation
+		} else {
+			log.Printf("KVServer %v's applier fails to send operation to channel %v: Clerk ID = %v, Operation ID = %v, Type = %v, Key = %v, Value = %v",
+				kv.me, index, operation.Clerk_id, operation.Op_id, operation.Type, operation.Key, operation.Value)
 		}
 		kv.mu.Unlock()
 	}
