@@ -2,8 +2,9 @@ package kvraft
 
 const (
 	OK             = "OK"
-	ErrNoKey       = "ErrNoKey"
 	ErrWrongLeader = "ErrWrongLeader"
+	ErrOpDiscarded = "ErrOpDiscarded"
+	ErrTimeout     = "ErrTimeout"
 )
 
 type Err string
@@ -15,8 +16,8 @@ type GetArgs struct {
 }
 
 type GetReply struct {
-	Success bool
-	Value   string
+	Error Err
+	Value string
 }
 
 type PutAppendArgs struct {
@@ -28,5 +29,5 @@ type PutAppendArgs struct {
 }
 
 type PutAppendReply struct {
-	Success bool
+	Error Err
 }

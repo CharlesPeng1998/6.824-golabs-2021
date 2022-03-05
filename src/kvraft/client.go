@@ -52,16 +52,29 @@ func (ck *Clerk) Get(key string) string {
 	ret := ""
 
 	for {
-		log.Printf("Clerk %v is sending Get RPC to server %v, Key = %v, operation ID = %v...",
+		log.Printf("Clerk %v is sending Get RPC to server %v: Key = %v, Operation ID = %v...",
 			ck.clerk_id, possible_leader, key, ck.operation_id)
 		ok := ck.servers[possible_leader].Call("KVServer.Get", &args, &reply)
-		if ok && reply.Success {
-			log.Printf("Clerk %v succeeds in calling Get to server %v, Key = %v, Value = %v, operation ID = %v...",
+
+		if ok && reply.Error == OK {
+			log.Printf("Clerk %v succeeds in Get operation in server %v: Key = %v, Value = %v, Operation ID = %v...",
 				ck.clerk_id, possible_leader, key, reply.Value, ck.operation_id)
 			ret = reply.Value
 			break
-		} else {
-			log.Printf("Clerk %v fails in calling Get to server %v, Key = %v, operation ID = %v! Resending...",
+		} else if ok && reply.Error == ErrWrongLeader {
+			log.Printf("Clerk %v sends Get RPC to the wrong leader %v: Key = %v, Operation ID = %v...",
+				ck.clerk_id, possible_leader, key, ck.operation_id)
+			possible_leader = (possible_leader + 1) % len(ck.servers)
+		} else if ok && reply.Error == ErrOpDiscarded {
+			log.Printf("Clerk %v's Get operation to server %v is discarded: Key = %v, Operation ID = %v...",
+				ck.clerk_id, possible_leader, key, ck.operation_id)
+			possible_leader = (possible_leader + 1) % len(ck.servers)
+		} else if ok && reply.Error == ErrTimeout {
+			log.Printf("Clerk %v's Get operation to server %v is timeout: Key = %v, Operation ID = %v...",
+				ck.clerk_id, possible_leader, key, ck.operation_id)
+			possible_leader = (possible_leader + 1) % len(ck.servers)
+		} else if !ok {
+			log.Printf("Clerk %v fails to send Get RPC to server %v: Key = %v, Operation Id = %v...",
 				ck.clerk_id, possible_leader, key, ck.operation_id)
 			possible_leader = (possible_leader + 1) % len(ck.servers)
 		}
@@ -94,15 +107,28 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 	possible_leader := ck.last_leader
 
 	for {
-		log.Printf("Clerk %v is sending PutAppend RPC to server %v, Type = %v, Key = %v, Value = %v, operation ID = %v...",
+		log.Printf("Clerk %v is sending PutAppend RPC to server %v: Type = %v, Key = %v, Value = %v, Operation ID = %v...",
 			ck.clerk_id, possible_leader, args.Type, key, value, ck.operation_id)
 		ok := ck.servers[possible_leader].Call("KVServer.PutAppend", &args, &reply)
-		if ok && reply.Success {
-			log.Printf("Clerk %v succeeds in calling PutAppend RPC to server %v, Type = %v, Key = %v, Value = %v, operation ID = %v...",
+
+		if ok && reply.Error == OK {
+			log.Printf("Clerk %v succeeds in PutAppend operation in server %v: Type = %v, Key = %v, Value = %v, Operation ID = %v...",
 				ck.clerk_id, possible_leader, args.Type, key, value, ck.operation_id)
 			break
-		} else {
-			log.Printf("Clerk %v fails in calling PutAppend RPC to server %v, Type = %v, Key = %v, Value = %v, operation ID = %v! Resending...",
+		} else if ok && reply.Error == ErrWrongLeader {
+			log.Printf("Clerk %v sends PutAppend RPC to the wrong leader %v: Type = %v, Key = %v, Value = %v, Operation ID = %v...",
+				ck.clerk_id, possible_leader, args.Type, key, value, ck.operation_id)
+			possible_leader = (possible_leader + 1) % len(ck.servers)
+		} else if ok && reply.Error == ErrOpDiscarded {
+			log.Printf("Clerk %v's PutAppend operation to server %v is discarded: Type = %v, Key = %v, Value = %v, Operation ID = %v...",
+				ck.clerk_id, possible_leader, args.Type, key, value, ck.operation_id)
+			possible_leader = (possible_leader + 1) % len(ck.servers)
+		} else if ok && reply.Error == ErrTimeout {
+			log.Printf("Clerk %v's PutAppend operation to server %v is timeout: Type = %v, Key = %v, Value = %v, Operation ID = %v...",
+				ck.clerk_id, possible_leader, args.Type, key, value, ck.operation_id)
+			possible_leader = (possible_leader + 1) % len(ck.servers)
+		} else if !ok {
+			log.Printf("Clerk %v fails to send PutAppend RPC to server %v: Type = %v, Key = %v, Value = %v, Operation Id = %v...",
 				ck.clerk_id, possible_leader, args.Type, key, value, ck.operation_id)
 			possible_leader = (possible_leader + 1) % len(ck.servers)
 		}

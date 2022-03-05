@@ -46,7 +46,7 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	index, _, isLeader := kv.rf.Start(operation)
 
 	if !isLeader { // This server is not leader
-		reply.Success = false
+		reply.Error = ErrWrongLeader
 		return
 	}
 
@@ -58,17 +58,18 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	select {
 	case recv_operation := <-kv.informCh[index]:
 		if recv_operation.Clerk_id == args.Clerk_id && recv_operation.Op_id == args.Op_id {
-			log.Printf("KVServer %v's Get handler succeeds to see operation from clerk %v: Operation ID = %v, Key = %v, Value = %v",
+			log.Printf("KVServer %v succeeds to handle Get operation from clerk %v: Operation ID = %v, Key = %v, Value = %v",
 				kv.me, recv_operation.Clerk_id, recv_operation.Op_id, recv_operation.Key, recv_operation.Value)
-			reply.Success = true
+			reply.Error = OK
 			reply.Value = recv_operation.Value
 		} else {
 			log.Printf("KVServer %v's Get handler sees different operation at index %v", kv.me, index)
-			reply.Success = false
+			reply.Error = ErrOpDiscarded
 		}
 	case <-time.After(500 * time.Millisecond):
 		log.Printf("KVServer %v's Get handler fails to see operation from clerk %v in 500ms: Operation ID = %v, Key = %v",
 			kv.me, operation.Clerk_id, operation.Op_id, operation.Key)
+		reply.Error = ErrTimeout
 	}
 
 	kv.mu.Lock()
@@ -86,7 +87,7 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 
 	index, _, isLeader := kv.rf.Start(operation)
 	if !isLeader { // This server is not leader
-		reply.Success = false
+		reply.Error = ErrWrongLeader
 		return
 	}
 
@@ -98,16 +99,17 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	select {
 	case recv_operation := <-kv.informCh[index]:
 		if recv_operation.Clerk_id == args.Clerk_id && recv_operation.Op_id == args.Op_id {
-			log.Printf("KVServer %v's PutAppend handler succeeds to see operation from clerk %v: Operation ID = %v, Key = %v, Value = %v",
-				kv.me, recv_operation.Clerk_id, recv_operation.Op_id, recv_operation.Key, recv_operation.Value)
-			reply.Success = true
+			log.Printf("KVServer %v succeeds to handle PutAppend operation from clerk %v: Type = %v, Operation ID = %v, Key = %v, Value = %v",
+				kv.me, recv_operation.Clerk_id, recv_operation.Type, recv_operation.Op_id, recv_operation.Key, recv_operation.Value)
+			reply.Error = OK
 		} else {
 			log.Printf("KVServer %v's PutAppend handler sees different operation at index %v", kv.me, index)
-			reply.Success = false
+			reply.Error = ErrOpDiscarded
 		}
 	case <-time.After(500 * time.Millisecond):
 		log.Printf("KVServer %v's PutAppend handler fails to see operation from clerk %v in 500ms: Operation ID = %v, Key = %v, Value = %v",
 			kv.me, operation.Clerk_id, operation.Op_id, operation.Key, operation.Value)
+		reply.Error = ErrTimeout
 	}
 
 	kv.mu.Lock()
@@ -129,7 +131,11 @@ func (kv *KVServer) apply() {
 			log.Printf("KVServer %v applies Put from clerk %v: Operation ID = %v, Key = %v, Value = %v",
 				kv.me, operation.Clerk_id, operation.Op_id, operation.Key, operation.Value)
 		} else if operation.Type == 1 { // Append
-			kv.kv_data[operation.Key] += operation.Value
+			if value, ok := kv.kv_data[operation.Key]; ok {
+				kv.kv_data[operation.Key] = value + operation.Value
+			} else {
+				kv.kv_data[operation.Key] = operation.Value
+			}
 			log.Printf("KVServer %v applies Append from clerk %v: Operation ID = %v, Key = %v, Value = %v",
 				kv.me, operation.Clerk_id, operation.Op_id, operation.Key, operation.Value)
 		} else if operation.Type == 2 { // Get
