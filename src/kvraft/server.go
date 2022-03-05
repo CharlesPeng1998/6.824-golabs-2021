@@ -73,6 +73,7 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 		return
 	}
 
+	// Start a channel to hear from applier
 	kv.mu.Lock()
 	kv.informCh[index] = make(chan Op, 1)
 	kv.mu.Unlock()
@@ -85,7 +86,7 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 			reply.Success = true
 			reply.Value = recv_operation.Value
 		} else {
-			log.Printf("KVServer %v' Get handler sees different operation at index %v", kv.me, index)
+			log.Printf("KVServer %v's Get handler sees different operation at index %v", kv.me, index)
 			reply.Success = false
 		}
 	case <-time.After(500 * time.Millisecond):
@@ -99,7 +100,42 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 }
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
-	// Your code here.
+	var operation Op
+	if args.Type == 0 {
+		operation = Op{Clerk_id: args.Clerk_id, Op_id: args.Op_id, Type: 0, Key: args.Key, Value: args.Value}
+	} else if args.Type == 1 {
+		operation = Op{Clerk_id: args.Clerk_id, Op_id: args.Op_id, Type: 1, Key: args.Key, Value: args.Value}
+	}
+
+	index, _, isLeader := kv.rf.Start(operation)
+	if !isLeader { // This server is not leader
+		reply.Success = false
+		return
+	}
+
+	// Start a channel to hear from applier
+	kv.mu.Lock()
+	kv.informCh[index] = make(chan Op, 1)
+	kv.mu.Unlock()
+
+	select {
+	case recv_operation := <-kv.informCh[index]:
+		if recv_operation.Clerk_id == args.Clerk_id && recv_operation.Op_id == args.Op_id {
+			log.Printf("KVServer %v's PutAppend handler succeeds to see operation from clerk %v: Operation ID = %v, Key = %v, Value = %v",
+				kv.me, recv_operation.Clerk_id, recv_operation.Op_id, recv_operation.Key, recv_operation.Value)
+			reply.Success = true
+		} else {
+			log.Printf("KVServer %v's PutAppend handler sees different operation at index %v", kv.me, index)
+			reply.Success = false
+		}
+	case <-time.After(500 * time.Millisecond):
+		log.Printf("KVServer %v's PutAppend handler fails to see operation from clerk %v in 500ms: Operation ID = %v, Key = %v, Value = %v",
+			kv.me, operation.Clerk_id, operation.Op_id, operation.Key, operation.Value)
+	}
+
+	kv.mu.Lock()
+	delete(kv.informCh, index)
+	kv.mu.Unlock()
 }
 
 func (kv *KVServer) apply() {
