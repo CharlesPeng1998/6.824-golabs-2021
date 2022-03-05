@@ -41,29 +41,6 @@ type KVServer struct {
 	kv_data       map[string]string // the key-value data
 }
 
-type GetArgs struct {
-	Clerk_id int64
-	Op_id    int
-	Key      string
-}
-
-type GetReply struct {
-	Success bool
-	Value   string
-}
-
-type PutAppendArgs struct {
-	Clerk_id int64
-	Op_id    int
-	Type     int // 0 for Put and 1 for Append
-	Key      string
-	Value    string
-}
-
-type PutAppendReply struct {
-	Success bool
-}
-
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	operation := Op{Clerk_id: args.Clerk_id, Op_id: args.Op_id, Type: 2, Key: args.Key}
 	index, _, isLeader := kv.rf.Start(operation)
@@ -140,11 +117,11 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 
 func (kv *KVServer) apply() {
 	for apply_msg := range kv.applyCh {
-		operation := apply_msg.Command
+		operation := apply_msg.Command.(Op)
 
 		kv.mu.Lock()
 
-		if kv.clerk2maxOpId[operation.Clerk_id] >= operation.Op_id && operation.Type == 0 && operation.Type == 1 { // Duplicate write operation
+		if kv.clerk2maxOpId[operation.Clerk_id] >= operation.Op_id && (operation.Type == 0 || operation.Type == 1) { // Duplicate write operation
 			log.Printf("KVServer %v sees duplicate write operation id from clerk %v: %v (Max operation ID = %v)",
 				kv.me, operation.Clerk_id, operation.Op_id, kv.clerk2maxOpId[operation.Clerk_id])
 		} else if operation.Type == 0 { // Put
