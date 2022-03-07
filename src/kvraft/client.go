@@ -46,7 +46,6 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 //
 func (ck *Clerk) Get(key string) string {
 	args := GetArgs{Clerk_id: ck.clerk_id, Op_id: ck.operation_id, Key: key}
-	reply := GetReply{}
 
 	possible_leader := ck.last_leader
 	ret := ""
@@ -54,6 +53,8 @@ func (ck *Clerk) Get(key string) string {
 	for {
 		log.Printf("Clerk %v is sending Get RPC to server %v: Key = %v, Operation ID = %v...",
 			ck.clerk_id, possible_leader, key, ck.operation_id)
+
+		reply := GetReply{}
 		ok := ck.servers[possible_leader].Call("KVServer.Get", &args, &reply)
 
 		if ok && reply.Error == OK {
@@ -102,13 +103,14 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 	} else if op == "Append" {
 		args.Type = 1
 	}
-	reply := PutAppendReply{}
 
 	possible_leader := ck.last_leader
 
 	for {
 		log.Printf("Clerk %v is sending PutAppend RPC to server %v: Type = %v, Key = %v, Value = %v, Operation ID = %v...",
 			ck.clerk_id, possible_leader, args.Type, key, value, ck.operation_id)
+
+		reply := PutAppendReply{}
 		ok := ck.servers[possible_leader].Call("KVServer.PutAppend", &args, &reply)
 
 		if ok && reply.Error == OK {
