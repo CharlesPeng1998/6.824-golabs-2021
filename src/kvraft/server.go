@@ -42,6 +42,12 @@ type KVServer struct {
 }
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
+	kv.mu.Lock()
+	if _, ok := kv.clerk2maxOpId[args.Clerk_id]; !ok {
+		kv.clerk2maxOpId[args.Clerk_id] = -1
+	}
+	kv.mu.Unlock()
+
 	operation := Op{Clerk_id: args.Clerk_id, Op_id: args.Op_id, Type: 2, Key: args.Key}
 	index, _, isLeader := kv.rf.Start(operation)
 
@@ -78,6 +84,12 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 }
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
+	kv.mu.Lock()
+	if _, ok := kv.clerk2maxOpId[args.Clerk_id]; !ok {
+		kv.clerk2maxOpId[args.Clerk_id] = -1
+	}
+	kv.mu.Unlock()
+
 	var operation Op
 	if args.Type == 0 {
 		operation = Op{Clerk_id: args.Clerk_id, Op_id: args.Op_id, Type: 0, Key: args.Key, Value: args.Value}
