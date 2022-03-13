@@ -11,6 +11,7 @@ import "sync"
 import "sync/atomic"
 import "fmt"
 import "io/ioutil"
+import "log"
 
 // The tester generously allows solutions to complete elections in one second
 // (much more than the paper's range of timeouts).
@@ -384,7 +385,8 @@ func GenericTest(t *testing.T, part string, nclients int, nservers int, unreliab
 // Check that ops are committed fast enough, better than 1 per heartbeat interval
 func GenericTestSpeed(t *testing.T, part string, maxraftstate int) {
 	const nservers = 3
-	const numOps = 1000
+	// const numOps = 1000
+	const numOps = 10
 	cfg := make_config(t, nservers, false, maxraftstate)
 	defer cfg.cleanup()
 
@@ -394,15 +396,24 @@ func GenericTestSpeed(t *testing.T, part string, maxraftstate int) {
 
 	// wait until first op completes, so we know a leader is elected
 	// and KV servers are ready to process client requests
+	log.Printf("Debug: Starting the first Get operation...")
 	ck.Get("x")
+	log.Printf("Debug: The first Get operation is done...")
 
 	start := time.Now()
 	for i := 0; i < numOps; i++ {
+		log.Printf("Debug: Starting the %v Append operation...", i)
+		append_start := time.Now()
 		ck.Append("x", "x 0 "+strconv.Itoa(i)+" y")
+		append_dur := time.Since(append_start)
+		log.Printf("Debug: The %v Append operation is done, elapsed time = %v...", i, append_dur)
 	}
 	dur := time.Since(start)
 
+	log.Printf("Debug: Starting the last Get operation...")
 	v := ck.Get("x")
+	log.Printf("Debug: The last Get operation is done...")
+
 	checkClntAppends(t, 0, v, numOps)
 
 	// heartbeat interval should be ~ 100 ms; require at least 3 ops per

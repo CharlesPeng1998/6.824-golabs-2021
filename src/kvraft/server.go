@@ -108,6 +108,7 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	kv.informCh[index] = make(chan Op, 1)
 	kv.mu.Unlock()
 
+	start := time.Now()
 	select {
 	case recv_operation := <-kv.informCh[index]:
 		if recv_operation.Clerk_id == args.Clerk_id && recv_operation.Op_id == args.Op_id {
@@ -123,6 +124,8 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 			kv.me, operation.Clerk_id, operation.Op_id, operation.Key, operation.Value)
 		reply.Error = ErrTimeout
 	}
+	dur := time.Since(start)
+	log.Printf("Debug: Elapsed time = %v", dur)
 
 	kv.mu.Lock()
 	delete(kv.informCh, index)
