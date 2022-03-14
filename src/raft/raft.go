@@ -19,8 +19,10 @@ package raft
 
 import (
 	"bytes"
+	"fmt"
 	"log"
 	"math/rand"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -29,13 +31,13 @@ import (
 	"6.824/labrpc"
 )
 
-// func init() {
-// 	log_file, err := os.OpenFile("raft.log", os.O_WRONLY|os.O_CREATE, 0666)
-// 	if err != nil {
-// 		fmt.Println("Fail to open log file!", err)
-// 	}
-// 	log.SetOutput(log_file)
-// }
+func init() {
+	log_file, err := os.OpenFile("raft.log", os.O_WRONLY|os.O_CREATE, 0666)
+	if err != nil {
+		fmt.Println("Fail to open log file!", err)
+	}
+	log.SetOutput(log_file)
+}
 
 //
 // as each Raft peer becomes aware that successive log entries are
@@ -728,30 +730,31 @@ func (rf *Raft) leaderRoutine() {
 		}
 	}
 
-	// Leader sending log entries
-	for i := 0; i < num_server; i++ {
-		if i != me {
-			rf.mu.Lock()
-			next_index := rf.next_index[i]
-			last_log_index := rf.last_included_index + len(rf.log)
-			last_included_index := rf.last_included_index
-			last_included_term := rf.last_included_term
-			log_copy := []LogEntry{}
-			log_copy = append(log_copy, rf.log...)
-			rf.mu.Unlock()
+	for i := 0; i < 3; i++ {
+		// Leader sending log entries
+		for i := 0; i < num_server; i++ {
+			if i != me {
+				rf.mu.Lock()
+				next_index := rf.next_index[i]
+				last_log_index := rf.last_included_index + len(rf.log)
+				last_included_index := rf.last_included_index
+				last_included_term := rf.last_included_term
+				log_copy := []LogEntry{}
+				log_copy = append(log_copy, rf.log...)
+				rf.mu.Unlock()
 
-			if last_log_index >= next_index {
-				// go rf.sendLogEntries(i, current_term)
-				if next_index > last_included_index {
-					go rf.sendLogEntries(i, current_term, last_included_index, last_included_term, log_copy)
-				} else {
-					go rf.sendSnapshot(i, current_term)
+				if last_log_index >= next_index {
+					// go rf.sendLogEntries(i, current_term)
+					if next_index > last_included_index {
+						go rf.sendLogEntries(i, current_term, last_included_index, last_included_term, log_copy)
+					} else {
+						go rf.sendSnapshot(i, current_term)
+					}
 				}
 			}
 		}
+		time.Sleep(33 * time.Millisecond)
 	}
-
-	time.Sleep(100 * time.Millisecond)
 
 	rf.mu.Lock()
 	// Commit those uncommitted log entries
