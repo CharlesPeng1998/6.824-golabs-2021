@@ -350,7 +350,17 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		}
 	} else { // Append entries
 		if consistent {
-			rf.log = append(rf.log[0:prev_log_index-rf.last_included_index], args.Entries...)
+			// Skip those exsited log entries
+			index_log := prev_log_index - rf.last_included_index
+			index_entries := 0
+			for index_log < len(rf.log) && index_entries < len(args.Entries) && rf.log[index_log].Term == args.Entries[index_entries].Term {
+				index_log += 1
+				index_entries += 1
+			}
+			if index_entries < len(args.Entries) {
+				rf.log = append(rf.log[0:index_log], args.Entries[index_entries:len(args.Entries)]...)
+			}
+
 			reply.Success = true
 
 			// for debug
@@ -730,7 +740,7 @@ func (rf *Raft) leaderRoutine() {
 		}
 	}
 
-	for i := 0; i < 3; i++ {
+	for i := 0; i < 10; i++ {
 		// Leader sending log entries
 		for i := 0; i < num_server; i++ {
 			if i != me {
@@ -753,50 +763,50 @@ func (rf *Raft) leaderRoutine() {
 				}
 			}
 		}
-		time.Sleep(33 * time.Millisecond)
-	}
+		time.Sleep(10 * time.Millisecond)
 
-	rf.mu.Lock()
-	// Commit those uncommitted log entries
-	for index := rf.commit_index + 1; index <= rf.last_included_index+len(rf.log); index++ {
-		log_offset := index - rf.last_included_index - 1
-		if rf.log[log_offset].Term != current_term {
-			continue
-		}
-		cnt := 1
-		for i := 0; i < len(rf.peers); i++ {
-			if i != rf.me && rf.match_index[i] >= index {
-				cnt += 1
+		rf.mu.Lock()
+		// Commit those uncommitted log entries
+		for index := rf.commit_index + 1; index <= rf.last_included_index+len(rf.log); index++ {
+			log_offset := index - rf.last_included_index - 1
+			if rf.log[log_offset].Term != current_term {
+				continue
+			}
+			cnt := 1
+			for i := 0; i < len(rf.peers); i++ {
+				if i != rf.me && rf.match_index[i] >= index {
+					cnt += 1
+				}
+			}
+			if cnt > len(rf.peers)/2 {
+				old_commit_index := rf.commit_index
+				rf.commit_index = index
+				log.Printf("Leader %v's commitIndex is updated from %v to %v... (Current term: %v)", rf.me, old_commit_index, rf.commit_index, current_term)
+			} else {
+				break
 			}
 		}
-		if cnt > len(rf.peers)/2 {
-			old_commit_index := rf.commit_index
-			rf.commit_index = index
-			log.Printf("Leader %v's commitIndex is updated from %v to %v... (Current term: %v)", rf.me, old_commit_index, rf.commit_index, current_term)
-		} else {
-			break
-		}
-	}
 
-	// Apply those unapplied command
-	apply_success := true
-	for index := rf.last_applied + 1; index <= rf.commit_index; index++ {
-		log_offset := index - rf.last_included_index - 1
-		apply_msg := ApplyMsg{CommandValid: true, Command: rf.log[log_offset].Command, CommandIndex: index}
-		select {
-		case rf.applyCh <- apply_msg:
-			rf.last_applied = index
-			log.Printf("Command %v has been applied in leader %v!", index, rf.me)
-		case <-time.After(10 * time.Millisecond):
-			log.Printf("Fail to apply command %v in 10 ms in server %v!", index, rf.me)
-			apply_success = false
-		}
+		// Apply those unapplied command
+		apply_success := true
+		for index := rf.last_applied + 1; index <= rf.commit_index; index++ {
+			log_offset := index - rf.last_included_index - 1
+			apply_msg := ApplyMsg{CommandValid: true, Command: rf.log[log_offset].Command, CommandIndex: index}
+			select {
+			case rf.applyCh <- apply_msg:
+				rf.last_applied = index
+				log.Printf("Command %v has been applied in leader %v!", index, rf.me)
+			case <-time.After(10 * time.Millisecond):
+				log.Printf("Fail to apply command %v in 10 ms in server %v!", index, rf.me)
+				apply_success = false
+			}
 
-		if !apply_success {
-			break
+			if !apply_success {
+				break
+			}
 		}
+		rf.mu.Unlock()
 	}
-	rf.mu.Unlock()
 }
 
 /*
