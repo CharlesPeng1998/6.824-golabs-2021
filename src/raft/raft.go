@@ -19,10 +19,8 @@ package raft
 
 import (
 	"bytes"
-	"fmt"
 	"log"
 	"math/rand"
-	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -31,13 +29,13 @@ import (
 	"6.824/labrpc"
 )
 
-func init() {
-	log_file, err := os.OpenFile("raft.log", os.O_WRONLY|os.O_CREATE, 0666)
-	if err != nil {
-		fmt.Println("Fail to open log file!", err)
-	}
-	log.SetOutput(log_file)
-}
+// func init() {
+// 	log_file, err := os.OpenFile("raft.log", os.O_WRONLY|os.O_CREATE, 0666)
+// 	if err != nil {
+// 		fmt.Println("Fail to open log file!", err)
+// 	}
+// 	log.SetOutput(log_file)
+// }
 
 //
 // as each Raft peer becomes aware that successive log entries are
@@ -539,12 +537,12 @@ func (rf *Raft) sendHeartBeat(server int, current_term int) {
 /*
  @brief: Send log entries to a server
 */
-func (rf *Raft) sendLogEntries(server int, current_term int,
+func (rf *Raft) sendLogEntries(server int, current_term int, next_index int,
 	last_included_index int, last_included_term int, log_copy []LogEntry) {
 	rf.mu.Lock()
 	id := rf.me
 	log_len := len(log_copy)
-	prev_log_index := rf.next_index[server] - 1
+	prev_log_index := next_index - 1
 	var prev_log_term int
 	if prev_log_index <= last_included_index {
 		prev_log_term = last_included_term
@@ -553,10 +551,9 @@ func (rf *Raft) sendLogEntries(server int, current_term int,
 		prev_log_term = log_copy[log_offset].Term
 	}
 	leader_commit := rf.commit_index
-	start_offset := rf.next_index[server] - last_included_index - 1
+	start_offset := next_index - last_included_index - 1
 	var entries []LogEntry
 	entries = append(entries, log_copy[start_offset:len(log_copy)]...)
-	// log.Printf("Debug: start_offset = %v, nextIndex[%v] = %v... (Current term: %v)", start_offset, server, rf.next_index[server], rf.current_term)
 	rf.mu.Unlock()
 
 	log.Printf("Leader %v is sending log entries (Index starting from %v) to server %v... (Current term: %v)", id, prev_log_index+1, server, current_term)
@@ -754,12 +751,12 @@ func (rf *Raft) leaderRoutine() {
 				rf.mu.Unlock()
 
 				if last_log_index >= next_index {
-					// go rf.sendLogEntries(i, current_term)
-					if next_index > last_included_index {
-						go rf.sendLogEntries(i, current_term, last_included_index, last_included_term, log_copy)
-					} else {
-						go rf.sendSnapshot(i, current_term)
-					}
+					go rf.sendLogEntries(i, current_term, next_index, last_included_index, last_included_term, log_copy)
+					// if next_index > last_included_index {
+					// 	go rf.sendLogEntries(i, current_term, last_included_index, last_included_term, log_copy)
+					// } else {
+					// 	go rf.sendSnapshot(i, current_term)
+					// }
 				}
 			}
 		}
