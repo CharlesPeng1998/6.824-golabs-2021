@@ -19,8 +19,10 @@ package raft
 
 import (
 	"bytes"
+	"fmt"
 	"log"
 	"math/rand"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -29,13 +31,13 @@ import (
 	"6.824/labrpc"
 )
 
-// func init() {
-// 	log_file, err := os.OpenFile("raft.log", os.O_WRONLY|os.O_CREATE, 0666)
-// 	if err != nil {
-// 		fmt.Println("Fail to open log file!", err)
-// 	}
-// 	log.SetOutput(log_file)
-// }
+func init() {
+	log_file, err := os.OpenFile("raft.log", os.O_WRONLY|os.O_CREATE, 0666)
+	if err != nil {
+		fmt.Println("Fail to open log file!", err)
+	}
+	log.SetOutput(log_file)
+}
 
 //
 // as each Raft peer becomes aware that successive log entries are
@@ -195,20 +197,22 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	// Trim the log
-	new_log := []LogEntry{}
-	if index-rf.last_included_index < len(rf.log) {
-		new_log = append(new_log, rf.log[index-rf.last_included_index:len(rf.log)]...)
+	if index > rf.last_included_index {
+		new_log := []LogEntry{}
+		if index-rf.last_included_index < len(rf.log) {
+			new_log = append(new_log, rf.log[index-rf.last_included_index:len(rf.log)]...)
+		}
+
+		rf.last_included_term = rf.log[index-rf.last_included_index-1].Term
+		rf.last_included_index = index
+		rf.log = new_log
+
+		log.Printf("Snapshot is created for server %v: lastIncludedIndex = %v, lastIncludedTerm = %v... (Current term: %v)",
+			rf.me, rf.last_included_index, rf.last_included_term, rf.current_term)
+
+		rf.persistStateAndSnapshot(snapshot)
+
 	}
-
-	rf.last_included_term = rf.log[index-rf.last_included_index-1].Term
-	rf.last_included_index = index
-	rf.log = new_log
-
-	log.Printf("Snapshot is created for server %v: lastIncludedIndex = %v, lastIncludedTerm = %v... (Current term: %v)",
-		rf.me, rf.last_included_index, rf.last_included_term, rf.current_term)
-
-	rf.persistStateAndSnapshot(snapshot)
 }
 
 /****** RPC-related Structures ******/
@@ -348,7 +352,29 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		}
 	} else { // Append entries
 		if consistent {
-			rf.log = append(rf.log[0:prev_log_index-rf.last_included_index], args.Entries...)
+			// Skip those exsited log entries
+			var index_log int
+			var index_entries int
+			if prev_log_index <= rf.last_included_index {
+				index_log = 0
+				index_entries = rf.last_included_index - prev_log_index
+			} else {
+				index_log = prev_log_index - rf.last_included_index
+				index_entries = 0
+			}
+
+			// index_log := prev_log_index - rf.last_included_index
+			// index_entries := 0
+
+			for index_log < len(rf.log) && index_entries < len(args.Entries) && rf.log[index_log].Term == args.Entries[index_entries].Term {
+				index_log += 1
+				index_entries += 1
+			}
+
+			if index_entries < len(args.Entries) {
+				rf.log = append(rf.log[0:index_log], args.Entries[index_entries:len(args.Entries)]...)
+			}
+
 			reply.Success = true
 
 			// for debug
@@ -407,7 +433,7 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 		return
 	}
 
-	if args.LastIncludedIndex <= rf.last_applied { // Snapshot is out-dated -> Not send to service
+	if args.LastIncludedIndex <= rf.last_included_index { // Snapshot is out-dated -> Not send to service
 		log.Printf("Server %v sees out-dated snapshot: lastIncludedIndex = %v, lastApplied = %v... (Current term: %v)",
 			rf.me, args.LastIncludedIndex, rf.last_applied, rf.current_term)
 		return
@@ -429,15 +455,16 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 			rf.me, args.LastIncludedIndex, args.LastIncludedTerm, rf.current_term)
 		rf.persistStateAndSnapshot(args.Data)
 	}
+	rf.commit_index = rf.last_included_index
 
 	// Send snapshot to service
-	msg := ApplyMsg{SnapshotValid: true, Snapshot: args.Data,
-		SnapshotIndex: args.LastIncludedIndex, SnapshotTerm: args.LastIncludedTerm}
-	rf.applyCh <- msg
-	rf.last_applied = rf.last_included_index
-	rf.commit_index = rf.last_included_index
-	log.Printf("Server %v sends snapshot to service: lastIncludedIndex = %v, lastIncludedTerm = %v... (Current term: %v)",
-		rf.me, args.LastIncludedIndex, args.LastIncludedTerm, rf.current_term)
+	// msg := ApplyMsg{SnapshotValid: true, Snapshot: args.Data,
+	// 	SnapshotIndex: args.LastIncludedIndex, SnapshotTerm: args.LastIncludedTerm}
+	// rf.applyCh <- msg
+	// rf.last_applied = rf.last_included_index
+	// rf.commit_index = rf.last_included_index
+	// log.Printf("Server %v sends snapshot to service: lastIncludedIndex = %v, lastIncludedTerm = %v... (Current term: %v)",
+	// 	rf.me, args.LastIncludedIndex, args.LastIncludedTerm, rf.current_term)
 }
 
 /*
@@ -527,12 +554,12 @@ func (rf *Raft) sendHeartBeat(server int, current_term int) {
 /*
  @brief: Send log entries to a server
 */
-func (rf *Raft) sendLogEntries(server int, current_term int,
+func (rf *Raft) sendLogEntries(server int, current_term int, next_index int,
 	last_included_index int, last_included_term int, log_copy []LogEntry) {
 	rf.mu.Lock()
 	id := rf.me
 	log_len := len(log_copy)
-	prev_log_index := rf.next_index[server] - 1
+	prev_log_index := next_index - 1
 	var prev_log_term int
 	if prev_log_index <= last_included_index {
 		prev_log_term = last_included_term
@@ -541,10 +568,9 @@ func (rf *Raft) sendLogEntries(server int, current_term int,
 		prev_log_term = log_copy[log_offset].Term
 	}
 	leader_commit := rf.commit_index
-	start_offset := rf.next_index[server] - last_included_index - 1
+	start_offset := next_index - last_included_index - 1
 	var entries []LogEntry
 	entries = append(entries, log_copy[start_offset:len(log_copy)]...)
-	// log.Printf("Debug: start_offset = %v, nextIndex[%v] = %v... (Current term: %v)", start_offset, server, rf.next_index[server], rf.current_term)
 	rf.mu.Unlock()
 
 	log.Printf("Leader %v is sending log entries (Index starting from %v) to server %v... (Current term: %v)", id, prev_log_index+1, server, current_term)
@@ -574,12 +600,9 @@ func (rf *Raft) sendLogEntries(server int, current_term int,
 	rf.mu.Unlock()
 }
 
-func (rf *Raft) sendSnapshot(server int, current_term int) {
+func (rf *Raft) sendSnapshot(server int, current_term int, last_included_index int, last_included_term int, data []byte) {
 	rf.mu.Lock()
 	id := rf.me
-	last_included_index := rf.last_included_index
-	last_included_term := rf.last_included_term
-	data := rf.persister.ReadSnapshot()
 	rf.mu.Unlock()
 
 	log.Printf("Leader %v is sending snapshot (lastIncludedIndex = %v, lastIncludedTerm = %v) to server %v... (Current term: %v)",
@@ -728,72 +751,74 @@ func (rf *Raft) leaderRoutine() {
 		}
 	}
 
-	// Leader sending log entries
-	for i := 0; i < num_server; i++ {
-		if i != me {
-			rf.mu.Lock()
-			next_index := rf.next_index[i]
-			last_log_index := rf.last_included_index + len(rf.log)
-			last_included_index := rf.last_included_index
-			last_included_term := rf.last_included_term
-			log_copy := []LogEntry{}
-			log_copy = append(log_copy, rf.log...)
-			rf.mu.Unlock()
+	for i := 0; i < 10; i++ {
+		// Leader sending log entries
+		for i := 0; i < num_server; i++ {
+			if i != me {
+				rf.mu.Lock()
+				next_index := rf.next_index[i]
+				last_log_index := rf.last_included_index + len(rf.log)
+				last_included_index := rf.last_included_index
+				last_included_term := rf.last_included_term
+				log_copy := []LogEntry{}
+				log_copy = append(log_copy, rf.log...)
+				data := rf.persister.ReadSnapshot()
+				rf.mu.Unlock()
 
-			if last_log_index >= next_index {
-				// go rf.sendLogEntries(i, current_term)
-				if next_index > last_included_index {
-					go rf.sendLogEntries(i, current_term, last_included_index, last_included_term, log_copy)
-				} else {
-					go rf.sendSnapshot(i, current_term)
+				if last_log_index >= next_index {
+					// go rf.sendLogEntries(i, current_term, next_index, last_included_index, last_included_term, log_copy)
+					if next_index > last_included_index {
+						go rf.sendLogEntries(i, current_term, next_index, last_included_index, last_included_term, log_copy)
+					} else {
+						go rf.sendSnapshot(i, current_term, last_included_index, last_included_term, data)
+					}
 				}
 			}
 		}
-	}
+		time.Sleep(10 * time.Millisecond)
 
-	time.Sleep(100 * time.Millisecond)
-
-	rf.mu.Lock()
-	// Commit those uncommitted log entries
-	for index := rf.commit_index + 1; index <= rf.last_included_index+len(rf.log); index++ {
-		log_offset := index - rf.last_included_index - 1
-		if rf.log[log_offset].Term != current_term {
-			continue
-		}
-		cnt := 1
-		for i := 0; i < len(rf.peers); i++ {
-			if i != rf.me && rf.match_index[i] >= index {
-				cnt += 1
+		rf.mu.Lock()
+		// Commit those uncommitted log entries
+		for index := rf.commit_index + 1; index <= rf.last_included_index+len(rf.log); index++ {
+			log_offset := index - rf.last_included_index - 1
+			if rf.log[log_offset].Term != current_term {
+				continue
+			}
+			cnt := 1
+			for i := 0; i < len(rf.peers); i++ {
+				if i != rf.me && rf.match_index[i] >= index {
+					cnt += 1
+				}
+			}
+			if cnt > len(rf.peers)/2 {
+				old_commit_index := rf.commit_index
+				rf.commit_index = index
+				log.Printf("Leader %v's commitIndex is updated from %v to %v... (Current term: %v)", rf.me, old_commit_index, rf.commit_index, current_term)
+			} else {
+				break
 			}
 		}
-		if cnt > len(rf.peers)/2 {
-			old_commit_index := rf.commit_index
-			rf.commit_index = index
-			log.Printf("Leader %v's commitIndex is updated from %v to %v... (Current term: %v)", rf.me, old_commit_index, rf.commit_index, current_term)
-		} else {
-			break
-		}
-	}
 
-	// Apply those unapplied command
-	apply_success := true
-	for index := rf.last_applied + 1; index <= rf.commit_index; index++ {
-		log_offset := index - rf.last_included_index - 1
-		apply_msg := ApplyMsg{CommandValid: true, Command: rf.log[log_offset].Command, CommandIndex: index}
-		select {
-		case rf.applyCh <- apply_msg:
-			rf.last_applied = index
-			log.Printf("Command %v has been applied in leader %v!", index, rf.me)
-		case <-time.After(10 * time.Millisecond):
-			log.Printf("Fail to apply command %v in 10 ms in server %v!", index, rf.me)
-			apply_success = false
-		}
+		// Apply those unapplied command
+		apply_success := true
+		for index := rf.last_applied + 1; index > rf.last_included_index && index <= rf.commit_index; index++ {
+			log_offset := index - rf.last_included_index - 1
+			apply_msg := ApplyMsg{CommandValid: true, Command: rf.log[log_offset].Command, CommandIndex: index}
+			select {
+			case rf.applyCh <- apply_msg:
+				rf.last_applied = index
+				log.Printf("Command %v has been applied in leader %v!", index, rf.me)
+			case <-time.After(10 * time.Millisecond):
+				log.Printf("Fail to apply command %v in 10 ms in server %v!", index, rf.me)
+				apply_success = false
+			}
 
-		if !apply_success {
-			break
+			if !apply_success {
+				break
+			}
 		}
+		rf.mu.Unlock()
 	}
-	rf.mu.Unlock()
 }
 
 /*
@@ -822,21 +847,37 @@ func (rf *Raft) followerRoutine() {
 
 	// Apply those applied command
 	rf.mu.Lock()
-	apply_success := true
-	for index := rf.last_applied + 1; index <= rf.commit_index; index++ {
-		log_offset := index - rf.last_included_index - 1
-		apply_msg := ApplyMsg{CommandValid: true, Command: rf.log[log_offset].Command, CommandIndex: index}
+	if rf.last_included_index > rf.last_applied { // Apply snapshot
+		snapshot_data := rf.persister.ReadSnapshot()
+		apply_msg := ApplyMsg{SnapshotValid: true, Snapshot: snapshot_data,
+			SnapshotIndex: rf.last_included_index, SnapshotTerm: rf.last_included_term}
 		select {
 		case rf.applyCh <- apply_msg:
-			rf.last_applied = index
-			log.Printf("Command %v has been applied in server %v!", index, rf.me)
+			rf.last_applied = rf.last_included_index
+			rf.commit_index = rf.last_included_index
+			log.Printf("Server %v applies snapshot: lastIncludedIndex = %v, lastIncludedTerm = %v... (Current term: %v)",
+				rf.me, rf.last_included_index, rf.last_included_term, rf.current_term)
 		case <-time.After(10 * time.Millisecond):
-			log.Printf("Fail to apply command %v in 10 ms in server %v!", index, rf.me)
-			apply_success = false
+			log.Printf("Fail to apply snapshot in 10 ms in server %v: lastIncludedIndex = %v, lastIncludedTerm = %v... (Current term: %v)",
+				rf.me, rf.last_included_index, rf.last_included_term, rf.current_term)
 		}
+	} else { // Apply log entries
+		apply_success := true
+		for index := rf.last_applied + 1; index <= rf.commit_index; index++ {
+			log_offset := index - rf.last_included_index - 1
+			apply_msg := ApplyMsg{CommandValid: true, Command: rf.log[log_offset].Command, CommandIndex: index}
+			select {
+			case rf.applyCh <- apply_msg:
+				rf.last_applied = index
+				log.Printf("Command %v has been applied in server %v!", index, rf.me)
+			case <-time.After(10 * time.Millisecond):
+				log.Printf("Fail to apply command %v in 10 ms in server %v!", index, rf.me)
+				apply_success = false
+			}
 
-		if !apply_success {
-			break
+			if !apply_success {
+				break
+			}
 		}
 	}
 	rf.mu.Unlock()
