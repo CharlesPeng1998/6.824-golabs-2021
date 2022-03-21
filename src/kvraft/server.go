@@ -42,12 +42,6 @@ type KVServer struct {
 }
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
-	kv.mu.Lock()
-	if _, ok := kv.clerk2maxOpId[args.Clerk_id]; !ok {
-		kv.clerk2maxOpId[args.Clerk_id] = -1
-	}
-	kv.mu.Unlock()
-
 	operation := Op{Clerk_id: args.Clerk_id, Op_id: args.Op_id, Type: 2, Key: args.Key}
 	index, _, isLeader := kv.rf.Start(operation)
 
@@ -59,10 +53,11 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	// Start a channel to hear from applier
 	kv.mu.Lock()
 	kv.informCh[index] = make(chan Op, 1)
+	ch := kv.informCh[index]
 	kv.mu.Unlock()
 
 	select {
-	case recv_operation := <-kv.informCh[index]:
+	case recv_operation := <-ch:
 		if recv_operation.Clerk_id == args.Clerk_id && recv_operation.Op_id == args.Op_id {
 			log.Printf("KVServer %v succeeds to handle Get operation from clerk %v: Operation ID = %v, Key = %v, Value = %v",
 				kv.me, recv_operation.Clerk_id, recv_operation.Op_id, recv_operation.Key, recv_operation.Value)
@@ -84,12 +79,6 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 }
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
-	kv.mu.Lock()
-	if _, ok := kv.clerk2maxOpId[args.Clerk_id]; !ok {
-		kv.clerk2maxOpId[args.Clerk_id] = -1
-	}
-	kv.mu.Unlock()
-
 	var operation Op
 	if args.Type == 0 {
 		operation = Op{Clerk_id: args.Clerk_id, Op_id: args.Op_id, Type: 0, Key: args.Key, Value: args.Value}
@@ -106,11 +95,11 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Start a channel to hear from applier
 	kv.mu.Lock()
 	kv.informCh[index] = make(chan Op, 1)
+	ch := kv.informCh[index]
 	kv.mu.Unlock()
 
-	start := time.Now()
 	select {
-	case recv_operation := <-kv.informCh[index]:
+	case recv_operation := <-ch:
 		if recv_operation.Clerk_id == args.Clerk_id && recv_operation.Op_id == args.Op_id {
 			log.Printf("KVServer %v succeeds to handle PutAppend operation from clerk %v: Type = %v, Operation ID = %v, Key = %v, Value = %v",
 				kv.me, recv_operation.Clerk_id, recv_operation.Type, recv_operation.Op_id, recv_operation.Key, recv_operation.Value)
@@ -124,8 +113,6 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 			kv.me, operation.Clerk_id, operation.Op_id, operation.Key, operation.Value)
 		reply.Error = ErrTimeout
 	}
-	dur := time.Since(start)
-	log.Printf("Debug: Elapsed time = %v", dur)
 
 	kv.mu.Lock()
 	delete(kv.informCh, index)
@@ -137,6 +124,9 @@ func (kv *KVServer) apply() {
 		operation := apply_msg.Command.(Op)
 
 		kv.mu.Lock()
+		if _, ok := kv.clerk2maxOpId[operation.Clerk_id]; !ok {
+			kv.clerk2maxOpId[operation.Clerk_id] = -1
+		}
 
 		if kv.clerk2maxOpId[operation.Clerk_id] >= operation.Op_id && (operation.Type == 0 || operation.Type == 1) { // Duplicate write operation
 			log.Printf("KVServer %v sees duplicate write operation id from clerk %v: %v (Max operation ID = %v)",

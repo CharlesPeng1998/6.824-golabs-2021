@@ -247,6 +247,7 @@ func GenericTest(t *testing.T, part string, nclients int, nservers int, unreliab
 	for i := 0; i < nclients; i++ {
 		clnts[i] = make(chan int)
 	}
+
 	for i := 0; i < 3; i++ {
 		// log.Printf("Iteration %v\n", i)
 		atomic.StoreInt32(&done_clients, 0)
@@ -296,6 +297,7 @@ func GenericTest(t *testing.T, part string, nclients int, nservers int, unreliab
 			time.Sleep(1 * time.Second)
 			go partitioner(t, cfg, ch_partitioner, &done_partitioner)
 		}
+
 		time.Sleep(5 * time.Second)
 
 		atomic.StoreInt32(&done_clients, 1)     // tell clients to quit
@@ -385,8 +387,7 @@ func GenericTest(t *testing.T, part string, nclients int, nservers int, unreliab
 // Check that ops are committed fast enough, better than 1 per heartbeat interval
 func GenericTestSpeed(t *testing.T, part string, maxraftstate int) {
 	const nservers = 3
-	// const numOps = 1000
-	const numOps = 10
+	const numOps = 1000
 	cfg := make_config(t, nservers, false, maxraftstate)
 	defer cfg.cleanup()
 
@@ -396,9 +397,7 @@ func GenericTestSpeed(t *testing.T, part string, maxraftstate int) {
 
 	// wait until first op completes, so we know a leader is elected
 	// and KV servers are ready to process client requests
-	log.Printf("Debug: Starting the first Get operation...")
 	ck.Get("x")
-	log.Printf("Debug: The first Get operation is done...")
 
 	start := time.Now()
 	for i := 0; i < numOps; i++ {
@@ -410,9 +409,7 @@ func GenericTestSpeed(t *testing.T, part string, maxraftstate int) {
 	}
 	dur := time.Since(start)
 
-	log.Printf("Debug: Starting the last Get operation...")
 	v := ck.Get("x")
-	log.Printf("Debug: The last Get operation is done...")
 
 	checkClntAppends(t, 0, v, numOps)
 
