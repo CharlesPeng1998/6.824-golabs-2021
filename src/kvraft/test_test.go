@@ -11,6 +11,7 @@ import "sync"
 import "sync/atomic"
 import "fmt"
 import "io/ioutil"
+import "log"
 
 // The tester generously allows solutions to complete elections in one second
 // (much more than the paper's range of timeouts).
@@ -246,6 +247,7 @@ func GenericTest(t *testing.T, part string, nclients int, nservers int, unreliab
 	for i := 0; i < nclients; i++ {
 		clnts[i] = make(chan int)
 	}
+
 	for i := 0; i < 3; i++ {
 		// log.Printf("Iteration %v\n", i)
 		atomic.StoreInt32(&done_clients, 0)
@@ -295,6 +297,7 @@ func GenericTest(t *testing.T, part string, nclients int, nservers int, unreliab
 			time.Sleep(1 * time.Second)
 			go partitioner(t, cfg, ch_partitioner, &done_partitioner)
 		}
+
 		time.Sleep(5 * time.Second)
 
 		atomic.StoreInt32(&done_clients, 1)     // tell clients to quit
@@ -398,11 +401,16 @@ func GenericTestSpeed(t *testing.T, part string, maxraftstate int) {
 
 	start := time.Now()
 	for i := 0; i < numOps; i++ {
+		log.Printf("Debug: Starting the %v Append operation...", i)
+		append_start := time.Now()
 		ck.Append("x", "x 0 "+strconv.Itoa(i)+" y")
+		append_dur := time.Since(append_start)
+		log.Printf("Debug: The %v Append operation is done, elapsed time = %v...", i, append_dur)
 	}
 	dur := time.Since(start)
 
 	v := ck.Get("x")
+
 	checkClntAppends(t, 0, v, numOps)
 
 	// heartbeat interval should be ~ 100 ms; require at least 3 ops per
